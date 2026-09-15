@@ -1,0 +1,17 @@
+{
+  "name": "sls-manager",
+  "version": "0.1.7",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/main.mjs"
+  },
+  "dependencies": {
+    "mqtt": "5.15.2",
+    "ws": "8.21.3",
+    "yaml": "2.8.3"
+  }
+}

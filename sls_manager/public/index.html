@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>SLS</title>
+    <link rel="icon" href="./mark.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./style.css" />
+    <script src="./theme.js" defer></script>
+    <script src="./log-time.js" defer></script>
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <a class="brand" href="./"><img src="./mark.svg" alt="" width="42" height="42" /><span>SLS</span></a>
+        <button class="nav-item active" id="overview-nav">
+          <span class="nav-symbol">▦</span> Обзор контроллеров
+        </button>
+        <div class="nav-label controller-label">МОИ КОНТРОЛЛЕРЫ <span id="saved-count">0</span></div>
+        <nav id="gateway-nav" aria-label="Контроллеры"></nav>
+      </aside>
+      <main>
+        <header class="page-header app-header">
+          <h1 id="page-title">Контроллеры SLS</h1>
+          <div class="topbar-tools">
+            <span class="app-version">v0.1.7</span>
+            <label class="theme-control"
+              ><span>Тема</span
+              ><select id="theme-select" aria-label="Тема оформления">
+                <option value="auto">Авто</option>
+                <option value="light">Светлая</option>
+                <option value="dark">Тёмная</option>
+              </select></label
+            >
+          </div>
+        </header>
+        <div id="connection-error" class="notice danger" role="alert" hidden></div>
+        <div id="sidebar-installation" class="notice" role="status" hidden></div>
+        <section id="overview">
+          <div class="stats">
+            <article>
+              <span>Найдено в сети</span><strong id="found-stat">0</strong><small>LocalLink и MQTT</small>
+            </article>
+            <article>
+              <span>Подключено</span><strong id="connected-stat">0 <em>/ 0</em></strong
+              ><small>Сохранённые контроллеры</small>
+            </article>
+            <article>
+              <span>MQTT</span><strong id="mqtt-stat">0</strong
+              ><small id="mqtt-stat-caption">Проверка состояния MQTT…</small>
+            </article>
+          </div>
+          <section class="section-block">
+            <div class="section-title">
+              <h2>Мои контроллеры</h2>
+              <span id="saved-caption">Нет подключённых контроллеров</span>
+            </div>
+            <div id="gateway-cards" class="cards"></div>
+          </section>
+          <section class="panel discovery-panel">
+            <div class="section-title">
+              <div>
+                <h2><span class="radar-icon">◎</span> Видимые контроллеры</h2>
+              </div>
+            </div>
+            <div id="discovery-error" class="notice" hidden></div>
+            <div id="mqtt-discovery-status" class="muted small"></div>
+            <div id="discovered-list"></div>
+            <div class="panel-foot" id="discovery-foot">
+              LocalLink и MQTT: новые данные примерно раз в минуту. Зелёный — есть свежие данные, красный —
+              нет связи или данные устарели.
+            </div>
+          </section>
+        </section>
+        <section id="gateway-view" hidden>
+          <header class="page-header detail-header">
+            <div>
+              <p id="detail-subtitle"></p>
+            </div>
+            <div class="header-actions">
+              <button id="refresh-gateway">Обновить</button
+              ><button id="edit-gateway">Настройки доступа</button>
+            </div>
+          </header>
+          <div id="gateway-error" class="notice danger" hidden></div>
+          <div id="address-warning" class="notice" hidden></div>
+          <div class="gateway-summary" id="gateway-summary"></div>
+          <section id="mqtt-only" class="panel" hidden>
+            <h2>Отслеживание через MQTT</h2>
+            <p id="mqtt-only-description"></p>
+            <p class="muted">
+              Для просмотра устройств и лога подключите HTTP-доступ к контроллеру. Перезагрузка доступна через
+              MQTT. Его локальный веб-интерфейс доступен из вашей сети или через VPN.
+            </p>
+          </section>
+          <div class="tabs" role="tablist" aria-label="Разделы контроллера">
+            <button class="active" role="tab" aria-selected="true" data-tab="devices">Устройства</button
+            ><button role="tab" aria-selected="false" data-tab="integration">Интеграция с HA</button
+            ><button role="tab" aria-selected="false" data-tab="events">Лог</button>
+          </div>
+          <section id="tab-devices" class="tab-content">
+            <div class="panel pairing">
+              <div>
+                <h2>Добавить Zigbee-устройство</h2>
+                <p id="pairing-description">Откройте сеть, затем переведите устройство в режим сопряжения.</p>
+              </div>
+              <div class="pairing-actions">
+                <label class="sr-only" for="join-duration">Длительность сопряжения</label
+                ><select id="join-duration">
+                  <option value="60">На 1 минуту</option>
+                  <option value="180">На 3 минуты</option>
+                  <option value="240">На 4 минуты</option></select
+                ><button class="primary" id="join-button">Открыть сеть</button>
+              </div>
+            </div>
+            <div class="section-title">
+              <h2 id="devices-title">Устройства</h2>
+              <label class="search"
+                ><span class="sr-only">Поиск устройств</span
+                ><input id="device-search" type="search" placeholder="Найти устройство…"
+              /></label>
+            </div>
+            <div class="panel table-panel" id="devices-list"></div>
+          </section>
+          <section id="tab-integration" class="tab-content" hidden>
+            <div class="panel">
+              <div class="section-title">
+                <div>
+                  <h2>Подключение MQTT</h2>
+                  <p>Сущности создаёт стандартная интеграция MQTT в HA.</p>
+                </div>
+                <button id="monitor-button">Включить диагностику</button>
+              </div>
+              <div id="mqtt-checks" class="checks"></div>
+              <p class="muted small">
+                Диагностика только читает сообщения. Число Discovery — описания, полученные от брокера; оно не
+                подтверждает создание сущностей в HA.
+              </p>
+            </div>
+            <div class="panel mqtt-panel">
+              <h2>MQTT на контроллере</h2>
+              <p class="muted">
+                Укажите адрес брокера, доступный из сети SLS. Для Mosquitto в HAOS используйте локальный IP
+                сервера HA.
+              </p>
+              <form id="mqtt-form">
+                <div class="form-grid">
+                  <label
+                    >Адрес брокера<input
+                      name="server"
+                      required
+                      placeholder="192.168.1.10"
+                      autocomplete="off" /></label
+                  ><label
+                    >Порт<input name="port" type="number" min="1" max="65535" value="1883" required /></label
+                  ><label>Логин MQTT<input name="username" autocomplete="off" /></label
+                  ><label
+                    >Новый пароль MQTT<input
+                      name="password"
+                      type="password"
+                      autocomplete="new-password"
+                      placeholder="Пусто — сохранить текущий" /></label
+                  ><label>Префикс шлюза<input name="prefix" required placeholder="sls05EC" /></label
+                  ><label
+                    >Префикс Discovery<input name="discoveryPrefix" required value="homeassistant"
+                  /></label>
+                </div>
+                <div class="checkboxes">
+                  <label><input name="enabled" type="checkbox" /> MQTT включён</label
+                  ><label><input name="discovery" type="checkbox" /> Discovery для HA</label
+                  ><label
+                    ><input name="clearPassword" type="checkbox" /> Удалить сохранённый пароль MQTT</label
+                  >
+                </div>
+                <div class="notice">
+                  Изменение префикса может затронуть существующие устройства и автоматизации. Настройки
+                  записываются в SLS; для применения может потребоваться перезагрузка.
+                </div>
+                <div class="form-footer">
+                  <span id="mqtt-result" role="status"></span
+                  ><button class="primary" type="submit">Сохранить в SLS</button>
+                </div>
+              </form>
+            </div>
+            <div class="panel maintenance">
+              <div>
+                <h2>Управление подключением</h2>
+                <p class="muted">Удаление из менеджера сохраняет устройства SLS и сущности в HA.</p>
+              </div>
+              <div class="header-actions">
+                <button id="reboot-button">Перезагрузить SLS</button
+                ><button class="danger-text" id="forget-button">Убрать из менеджера</button>
+              </div>
+            </div>
+          </section>
+          <section id="tab-events" class="tab-content" hidden>
+            <div class="panel">
+              <div class="section-title">
+                <div>
+                  <h2>Лог контроллера</h2>
+                  <p id="events-status">Подключение к журналу…</p>
+                </div>
+                <label class="search"
+                  ><span class="sr-only">Фильтр лога</span
+                  ><input id="event-search" type="search" placeholder="Фильтр лога…"
+                /></label>
+                <button id="clear-log" title="Очистить строки в приложении; кэш контроллера сохраняется">
+                  Очистить
+                </button>
+              </div>
+              <div class="event-cache">
+                <span id="events-cache-status" role="status">Загрузка кэша лога…</span>
+              </div>
+              <div id="events-error" class="notice danger" hidden></div>
+              <div id="events-list" class="events"></div>
+              <div class="panel-foot">Кэш — при открытии. Далее — WebSocket. До 500 строк.</div>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+    <dialog id="connect-dialog">
+      <form id="connect-form">
+        <div class="dialog-header">
+          <div>
+            <div class="eyebrow">ПОДКЛЮЧЕНИЕ SLS</div>
+            <h2 id="connect-title">Добавить контроллер</h2>
+          </div>
+          <button type="button" class="icon-button" id="close-dialog" aria-label="Закрыть">×</button>
+        </div>
+        <p class="muted">Проверим доступ к контроллеру и сохраним подключение.</p>
+        <label
+          >Название<input name="name" maxlength="100" required placeholder="Например, основной этаж" /></label
+        ><label
+          >IP-адрес или имя<input name="address" required placeholder="192.168.1.156" autocomplete="off"
+        /></label>
+        <div class="form-grid">
+          <label>Логин SLS<input name="username" autocomplete="username" /></label
+          ><label>Пароль SLS<input name="password" type="password" autocomplete="current-password" /></label>
+        </div>
+        <details>
+          <summary>Подключить по токену</summary>
+          <label
+            >Токен доступа<input
+              name="token"
+              type="password"
+              autocomplete="off"
+              placeholder="32 символа из настроек SLS"
+          /></label>
+        </details>
+        <p class="small muted" id="credentials-help">
+          Если авторизация на SLS отключена, оставьте данные доступа пустыми.
+        </p>
+        <div id="connect-error" class="notice danger" role="alert" hidden></div>
+        <div class="form-footer">
+          <button type="button" id="cancel-connect">Отмена</button
+          ><button type="submit" class="primary" id="connect-submit">Проверить и подключить</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="confirm-dialog">
+      <form method="dialog">
+        <h2 id="confirm-title"></h2>
+        <p id="confirm-text"></p>
+        <label id="reboot-transport-field" hidden
+          >Способ перезагрузки<select id="reboot-transport"></select
+        ></label>
+        <div class="form-footer">
+          <button value="cancel">Отмена</button><button value="ok" class="primary">Подтвердить</button>
+        </div>
+      </form>
+    </dialog>
+    <div id="toast" role="status" hidden></div>
+  </body>
+</html>

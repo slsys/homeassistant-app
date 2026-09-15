@@ -1,0 +1,13 @@
+configuration:
+  multicast_address:
+    name: LocalLink address
+    description: SLS multicast group; defaults to 224.0.0.50.
+  multicast_port:
+    name: LocalLink UDP port
+    description: Defaults to 8881.
+  interfaces:
+    name: Network interfaces
+    description: Local HAOS IPv4 interface addresses. Leave empty for automatic selection.
+  poll_interval:
+    name: Poll interval
+    description: Gateway information polling interval, 30–600 seconds.

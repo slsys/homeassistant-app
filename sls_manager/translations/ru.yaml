@@ -1,0 +1,13 @@
+configuration:
+  multicast_address:
+    name: Адрес LocalLink
+    description: Multicast-адрес, настроенный на SLS. По умолчанию 224.0.0.50.
+  multicast_port:
+    name: UDP-порт LocalLink
+    description: По умолчанию 8881.
+  interfaces:
+    name: Сетевые интерфейсы
+    description: IPv4-адреса интерфейсов HAOS. Пустой список включает автоматический выбор.
+  poll_interval:
+    name: Интервал опроса
+    description: Период чтения сведений о шлюзах в секундах, от 30 до 600.

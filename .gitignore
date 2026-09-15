@@ -1,0 +1,6 @@
+.npm-cache/
+**/node_modules/
+**/.data/
+**/coverage/
+**/*.tmp
+artifacts/
