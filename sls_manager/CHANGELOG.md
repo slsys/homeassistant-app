@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.8
+
+- Fix the sidebar icon warning remaining visible after Home Assistant has restarted.
+- Check pending installation status every 30 seconds and clear the warning once HA registers the icon module.
+- Recover previously stuck installations without sending another restart command.
+
 ## 0.1.7
 
 - Install the SLS sidebar SVG automatically, validating HA configuration before a single restart; preserve existing frontend settings and adopt an identical manual installation.

@@ -1,5 +1,5 @@
 FROM node:24.13.0-alpine
-ARG BUILD_VERSION=0.1.7
+ARG BUILD_VERSION=0.1.8
 ARG BUILD_ARCH
 LABEL io.hass.name="SLS" \
       io.hass.description="LocalLink discovery and SLS management" \

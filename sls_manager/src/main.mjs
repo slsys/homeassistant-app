@@ -26,7 +26,39 @@ const manager = new Manager(store, discovery, { pollInterval, mqttDiscovery });
 const server = createServer(manager, { standalone });
 const port = Number(process.env.SLS_PORT || 8099);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid SLS_PORT');
+const sidebarAbort = new AbortController();
+let sidebarTimer;
+function stopSidebar() {
+  sidebarAbort.abort();
+  clearTimeout(sidebarTimer);
+}
+function sidebarError(error) {
+  if (sidebarAbort.signal.aborted) return;
+  manager.sidebarInstallation = {
+    state: 'error',
+    message: 'Не удалось автоматически установить иконку. Проверьте журнал SLS.',
+  };
+  console.error('Sidebar installation:', error.code || error.message);
+}
+async function updateSidebar(moduleSource) {
+  if (sidebarAbort.signal.aborted) return;
+  try {
+    await installSidebar({
+      dataDirectory: directory,
+      moduleSource,
+      signal: sidebarAbort.signal,
+      onStatus: (status) => {
+        manager.sidebarInstallation = status;
+      },
+    });
+  } catch (error) {
+    sidebarError(error);
+  }
+  if (!sidebarAbort.signal.aborted && manager.sidebarInstallation?.state === 'restart_pending')
+    sidebarTimer = setTimeout(() => void updateSidebar(moduleSource), 30000).unref();
+}
 server.on('error', (error) => {
+  stopSidebar();
   console.error('HTTP server:', error.code);
   manager.close();
   mqttDiscovery.close();
@@ -35,31 +67,18 @@ server.on('error', (error) => {
 });
 server.listen(port, standalone ? '127.0.0.1' : '0.0.0.0', () => {
   console.log(
-    `SLS 0.1.7 started (${standalone ? 'localhost development' : 'Home Assistant Ingress'}), port ${port}`,
+    `SLS 0.1.8 started (${standalone ? 'localhost development' : 'Home Assistant Ingress'}), port ${port}`,
   );
   discovery.start();
   void mqttDiscovery.start();
   manager.start();
   if (!standalone)
     void readFile(new URL('../frontend/sls-sidebar.js', import.meta.url), 'utf8')
-      .then((moduleSource) =>
-        installSidebar({
-          dataDirectory: directory,
-          moduleSource,
-          onStatus: (status) => {
-            manager.sidebarInstallation = status;
-          },
-        }),
-      )
-      .catch((error) => {
-        manager.sidebarInstallation = {
-          state: 'error',
-          message: 'Не удалось автоматически установить иконку. Проверьте журнал SLS.',
-        };
-        console.error('Sidebar installation:', error.code || error.message);
-      });
+      .then(updateSidebar)
+      .catch(sidebarError);
 });
 function shutdown() {
+  stopSidebar();
   manager.close();
   mqttDiscovery.close();
   discovery.close();

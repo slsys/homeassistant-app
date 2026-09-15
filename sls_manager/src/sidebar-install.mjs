@@ -1,6 +1,7 @@
 import { readFile, writeFile, rename, mkdir, realpath, stat, unlink } from 'node:fs/promises';
 import { dirname, join, relative, resolve, isAbsolute } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
+import { isIP } from 'node:net';
 import { parseDocument, isMap, isSeq, isScalar } from 'yaml';
 
 const error = (message) => new Error(message);
@@ -89,6 +90,7 @@ export async function planSidebar(configRoot, moduleSource) {
   modules = included.node;
   if (!isSeq(modules) || modules.tag) throw error('extra_module_url должен содержать список модулей');
   let existing = false;
+  const moduleUrls = [];
   for (const item of modules.items) {
     if (
       isScalar(item) &&
@@ -97,9 +99,13 @@ export async function planSidebar(configRoot, moduleSource) {
     ) {
       existing = true;
       if (!sameModule) item.value = desiredUrl;
+      moduleUrls.push(item.value);
     }
   }
-  if (!existing) modules.add(desiredUrl);
+  if (!existing) {
+    modules.add(desiredUrl);
+    moduleUrls.push(desiredUrl);
+  }
   for (const item of documents.values()) {
     // Preserve files byte for byte when the parsed content was not edited.
     const original = parse(item.before);
@@ -107,20 +113,52 @@ export async function planSidebar(configRoot, moduleSource) {
       writes.push({ path: item.path, before: item.before, after: String(item.doc), mode: item.mode });
   }
   if (!sameModule) writes.unshift({ path: output, before: beforeModule, after: moduleSource, mode: 0o644 });
-  return { root, writes, fingerprint: hash(JSON.stringify(writes.map((w) => [w.path, w.after]))) };
+  return { root, writes, moduleUrls, fingerprint: hash(JSON.stringify(writes.map((w) => [w.path, w.after]))) };
 }
 
-export async function supervisorRequest(path) {
+export async function supervisorRequest(path, { method = 'POST', signal } = {}) {
   if (!process.env.SUPERVISOR_TOKEN) throw error('Не предоставлен доступ к Supervisor');
   const response = await fetch('http://supervisor' + path, {
-    method: 'POST',
+    method,
     headers: { Authorization: 'Bearer ' + process.env.SUPERVISOR_TOKEN, 'Content-Type': 'application/json' },
-    body: '{}',
+    body: method === 'POST' ? '{}' : undefined,
     redirect: 'error',
-    signal: AbortSignal.timeout(path === '/core/check' ? 120000 : 15000),
+    signal: AbortSignal.any([
+      AbortSignal.timeout(path === '/core/check' ? 120000 : 15000),
+      ...(signal ? [signal] : []),
+    ]),
   });
   const result = await response.json();
   if (!response.ok || result.result !== 'ok') throw error('Supervisor не выполнил ' + path);
+  return result.data;
+}
+
+// The rendered index lists modules from the running Core, not the YAML on disk.
+export async function sidebarIsActive(moduleUrls, { signal } = {}) {
+  const core = await supervisorRequest('/core/info', { method: 'GET', signal });
+  if (!isIP(core?.ip_address || '') || !Number.isInteger(core.port) || core.port < 1 || core.port > 65535)
+    return false;
+  const host = isIP(core.ip_address) === 6 ? '[' + core.ip_address + ']' : core.ip_address;
+  // Keep the Supervisor credential on Supervisor; the frontend index is public.
+  const response = await fetch(`${core.ssl ? 'https' : 'http'}://${host}:${core.port}/`, {
+    headers: { Accept: 'text/html', 'Cache-Control': 'no-cache' },
+    redirect: 'error',
+    signal: AbortSignal.any([AbortSignal.timeout(10000), ...(signal ? [signal] : [])]),
+  });
+  if (!response.ok || !response.headers.get('content-type')?.includes('text/html')) {
+    await response.body?.cancel();
+    return false;
+  }
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of response.body) {
+    size += chunk.length;
+    if (size > 2 * 1024 * 1024) return false;
+    chunks.push(chunk);
+  }
+  const html = Buffer.concat(chunks).toString('utf8');
+  const imports = html.matchAll(/\bimport\s*\(\s*(["'])(\/local\/sls-sidebar\.js(?:\?[^"'<>]*)?)\1\s*\)/g);
+  return [...imports].some((match) => moduleUrls.includes(match[2]));
 }
 
 // The private journal is also a backup. It is written before any HA file changes.
@@ -129,8 +167,11 @@ export async function installSidebar({
   dataDirectory = '/data',
   moduleSource,
   request = supervisorRequest,
+  isActive = sidebarIsActive,
+  signal,
   onStatus = () => {},
 } = {}) {
+  signal?.throwIfAborted();
   await mkdir(dataDirectory, { recursive: true });
   const journalPath = join(dataDirectory, 'sls-sidebar-install.json');
   let journal;
@@ -145,11 +186,34 @@ export async function installSidebar({
     onStatus(result);
     return result;
   };
-  if (journal?.phase === 'restart_requested')
-    return status(
-      'restart_pending',
-      'Иконка установлена. Если HA ещё не перезапустился, перезапустите его вручную; повторная команда не отправляется.',
-    );
+  const pending = () => status(
+    'restart_pending',
+    'Иконка установлена. Ожидаем, пока HA подключит модуль; статус проверяется автоматически.',
+  );
+  const finish = async () => {
+    journal.phase = 'installed';
+    await save();
+    return status('installed');
+  };
+  const reconcile = async () => {
+    const root = await realpath(configRoot);
+    if (journal.root !== root) throw error('Каталог HA изменился; установка иконки остановлена');
+    // Read the installed module so journals from earlier app versions can recover too.
+    const output = await inside(root, join(root, 'www', 'sls-sidebar.js'));
+    const installedSource = await readFile(output, 'utf8');
+    const plan = await planSidebar(root, installedSource);
+    if (plan.writes.length)
+      return status('error', 'Настройки иконки в HA изменились. Проверьте frontend.extra_module_url.');
+    let active = false;
+    try {
+      active = await isActive(plan.moduleUrls, { signal });
+    } catch {
+      // Core may still be starting. A later check must never resend the restart.
+      signal?.throwIfAborted();
+    }
+    return active ? finish() : pending();
+  };
+  if (journal?.phase === 'restart_requested') return reconcile();
   if (journal?.phase === 'failed')
     return status(
       'error',
@@ -172,7 +236,7 @@ export async function installSidebar({
         throw error('Конфигурация HA изменена одновременно; установка иконки остановлена');
       if (current !== write.after) await atomicWrite(write.path, write.after, write.mode);
     }
-    await request('/core/check');
+    await request('/core/check', { signal });
     // A concurrent edit after validation must not trigger an unchecked restart.
     for (const write of journal.writes)
       if ((await readOptional(write.path)) !== write.after)
@@ -196,14 +260,11 @@ export async function installSidebar({
   }
   // Persist before sending, so an uncertain response cannot cause a restart loop.
   try {
-    await request('/core/restart');
-    journal.phase = 'installed';
-    await save();
-    return status('installed');
+    await request('/core/restart', { signal });
   } catch {
-    return status(
-      'restart_pending',
-      'Иконка установлена; подтверждение перезапуска HA не получено. Повторная команда не отправляется.',
-    );
+    signal?.throwIfAborted();
+    return reconcile();
   }
+  // A journal write failure is not a failed HA restart.
+  return finish();
 }
