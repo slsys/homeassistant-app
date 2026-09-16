@@ -238,7 +238,7 @@ export class Manager {
   }
   state() {
     return {
-      version: '0.1.8',
+      version: '0.1.9',
       sidebarInstallation: this.sidebarInstallation || null,
       discovery: {
         ...this.discovery.status,

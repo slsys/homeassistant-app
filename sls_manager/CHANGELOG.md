@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.9
+
+- Restore the SLS sidebar icon style when Home Assistant redraws or recreates the menu.
+- Keep a single style and observer controller when the icon module loads again, and disconnect observers for removed menu elements.
+
 ## 0.1.8
 
 - Fix the sidebar icon warning remaining visible after Home Assistant has restarted.
