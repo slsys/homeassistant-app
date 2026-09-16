@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="./style.css" />
     <script src="./theme.js" defer></script>
     <script src="./log-time.js" defer></script>
+    <script src="./controllers.js" defer></script>
     <script src="./app.js" defer></script>
   </head>
   <body>
@@ -23,9 +24,9 @@
       </aside>
       <main>
         <header class="page-header app-header">
-          <h1 id="page-title">Контроллеры SLS</h1>
+          <h1 id="page-title">Контроллеры</h1>
           <div class="topbar-tools">
-            <span class="app-version">v0.1.9</span>
+            <span class="app-version">v0.1.10</span>
             <label class="theme-control"
               ><span>Тема</span
               ><select id="theme-select" aria-label="Тема оформления">
@@ -53,17 +54,49 @@
             </article>
           </div>
           <section class="section-block">
-            <div class="section-title">
-              <h2>Мои контроллеры</h2>
-              <span id="saved-caption">Нет подключённых контроллеров</span>
+            <div class="list-toolbar">
+              <div class="section-name">
+                <h2>Мои контроллеры</h2>
+                <span id="saved-caption" class="count">0</span>
+              </div>
+              <div class="list-tools">
+                <label class="filter"
+                  ><span aria-hidden="true">⌕</span
+                  ><input id="saved-filter" type="search" aria-label="Фильтр моих контроллеров"
+                /></label>
+                <div class="view-switch" role="group" aria-label="Вид списка">
+                  <button data-controller-view="blocks" title="Блоки" aria-label="Блоки" aria-pressed="true">
+                    <svg viewBox="0 0 20 20" aria-hidden="true">
+                      <rect x="3" y="3" width="14" height="5" rx="1" />
+                      <rect x="3" y="12" width="14" height="5" rx="1" />
+                    </svg>
+                  </button>
+                  <button
+                    data-controller-view="table"
+                    title="Таблица"
+                    aria-label="Таблица"
+                    aria-pressed="false"
+                  >
+                    <svg viewBox="0 0 20 20" aria-hidden="true">
+                      <rect x="2" y="3" width="16" height="14" rx="1" />
+                      <path d="M2 8h16M2 12h16M8 3v14" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
             </div>
             <div id="gateway-cards" class="cards"></div>
           </section>
           <section class="panel discovery-panel">
-            <div class="section-title">
-              <div>
-                <h2><span class="radar-icon">◎</span> Видимые контроллеры</h2>
+            <div class="list-toolbar">
+              <div class="section-name">
+                <h2>Видимые контроллеры</h2>
+                <span id="visible-caption" class="count">0</span>
               </div>
+              <label class="filter"
+                ><span aria-hidden="true">⌕</span
+                ><input id="visible-filter" type="search" aria-label="Фильтр видимых контроллеров"
+              /></label>
             </div>
             <div id="discovery-error" class="notice" hidden></div>
             <div id="mqtt-discovery-status" class="muted small"></div>
@@ -78,8 +111,10 @@
           <header class="page-header detail-header">
             <div>
               <p id="detail-subtitle"></p>
+              <div id="detail-ha" class="detail-ha"></div>
             </div>
             <div class="header-actions">
+              <button id="detail-reboot">Перезагрузить</button>
               <button id="refresh-gateway">Обновить</button
               ><button id="edit-gateway">Настройки доступа</button>
             </div>
@@ -87,16 +122,10 @@
           <div id="gateway-error" class="notice danger" hidden></div>
           <div id="address-warning" class="notice" hidden></div>
           <div class="gateway-summary" id="gateway-summary"></div>
-          <section id="mqtt-only" class="panel" hidden>
-            <h2>Отслеживание через MQTT</h2>
-            <p id="mqtt-only-description"></p>
-            <p class="muted">
-              Для просмотра устройств и лога подключите HTTP-доступ к контроллеру. Перезагрузка доступна через
-              MQTT. Его локальный веб-интерфейс доступен из вашей сети или через VPN.
-            </p>
-          </section>
           <div class="tabs" role="tablist" aria-label="Разделы контроллера">
             <button class="active" role="tab" aria-selected="true" data-tab="devices">Устройства</button
+            ><button role="tab" aria-selected="false" data-tab="mqtt">Устройства MQTT</button
+            ><button role="tab" aria-selected="false" data-tab="ha">Объекты HA</button
             ><button role="tab" aria-selected="false" data-tab="integration">Интеграция с HA</button
             ><button role="tab" aria-selected="false" data-tab="events">Лог</button>
           </div>
@@ -123,6 +152,54 @@
               /></label>
             </div>
             <div class="panel table-panel" id="devices-list"></div>
+          </section>
+
+          <section id="tab-mqtt" class="tab-content" hidden></section>
+          <section id="mqtt-workspace-panel" hidden>
+            <div id="mqtt-view-warning" class="notice" hidden></div>
+            <div class="list-toolbar">
+              <div class="section-name">
+                <h2>Устройства MQTT</h2>
+                <span id="mqtt-device-count" class="count">0</span>
+              </div>
+              <label class="filter"
+                ><span aria-hidden="true">⌕</span
+                ><input id="mqtt-device-filter" type="search" aria-label="Фильтр устройств MQTT"
+              /></label>
+            </div>
+            <label class="mobile-device-picker"
+              ><span class="sr-only">Выбрать устройство</span
+              ><select id="mqtt-device-select"></select
+            ></label>
+            <div class="mqtt-workspace">
+              <nav id="mqtt-device-list" class="device-browser" aria-label="Устройства MQTT"></nav>
+              <div id="mqtt-device-detail" class="device-detail"></div>
+            </div>
+          </section>
+          <section id="tab-ha" class="tab-content" hidden>
+            <div class="list-toolbar ha-toolbar">
+              <h2>Объекты HA</h2>
+              <div class="list-tools">
+                <label class="filter"
+                  ><span aria-hidden="true">⌕</span
+                  ><input id="ha-filter" type="search" aria-label="Фильтр объектов HA"
+                /></label>
+                <select id="ha-source" aria-label="Источник объекта">
+                  <option value="all">Все источники</option>
+                  <option value="Discovery">Discovery</option>
+                  <option value="YAML">YAML</option>
+                  <option value="HA">HA · источник не указан</option>
+                </select>
+              </div>
+            </div>
+            <div id="ha-warning" class="notice" hidden></div>
+            <div id="ha-kinds" class="ha-kinds" role="group" aria-label="Тип объекта"></div>
+            <div id="ha-objects" class="ha-table-wrap"></div>
+            <div class="ha-table-footer">
+              <span id="ha-count"></span>
+              <div id="ha-pages" aria-label="Страницы объектов"></div>
+            </div>
+            <p id="ha-note" class="reading-note"></p>
           </section>
           <section id="tab-integration" class="tab-content" hidden>
             <div class="panel">

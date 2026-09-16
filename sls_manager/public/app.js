@@ -173,7 +173,7 @@ function renderOverview() {
   showNotice('#sidebar-installation', state.data.sidebarInstallation?.message);
   $('#page-title').textContent = state.selected
     ? gateways.find((g) => g.id === state.selected)?.name || 'Контроллер'
-    : 'Контроллеры SLS';
+    : 'Контроллеры';
   $('#mqtt-discovery-status').textContent = discovery.mqtt?.connected
     ? 'MQTT HA подключён'
     : discovery.mqtt?.error || 'MQTT HA: подключение…';
@@ -200,120 +200,15 @@ function renderOverview() {
     : 'Нет подключённых контроллеров';
   showNotice('#discovery-error', discovery.error);
   $('#gateway-nav').replaceChildren();
-  $('#gateway-cards').replaceChildren();
-  for (const gateway of gateways) {
-    const nav = el('button', `nav-item${gateway.id === state.selected ? ' active' : ''}`);
+  for (const gateway of [...gateways].sort(
+    (a, b) => Number(b.connected) - Number(a.connected) || a.name.localeCompare(b.name),
+  )) {
+    const nav = el('button', 'nav-item' + (gateway.id === state.selected ? ' active' : ''));
     nav.append(connectionDot(gateway.connected), document.createTextNode(gateway.name));
     nav.onclick = () => selectGateway(gateway.id);
     $('#gateway-nav').append(nav);
-    const card = el('article', 'gateway-card');
-    const title = el('button', 'gateway-open');
-    title.append(connectionDot(gateway.connected), el('strong', '', gateway.name));
-    if (gateway.localLink) title.append(badge('LocalLink', 'success'));
-    title.onclick = () => selectGateway(gateway.id);
-    const address = el('div', 'compact-field address');
-    address.append(
-      webLink(
-        gateway.webAddress || gateway.address,
-        gateway.webAddress || gateway.address ? undefined : 'MQTT',
-      ),
-      el('small', 'card-uptime', uptime(gateway.uptime)),
-      el('small', 'card-last-data', 'Данные: ' + ago(gateway.lastDataAt)),
-    );
-    address.title = 'Адрес, время работы и последние данные';
-    const model = field(
-      gateway.info?.board || gateway.observed?.board || 'SLS',
-      gateway.info?.version || gateway.observed?.version || 'Версия неизвестна',
-      'card-model',
-    );
-    const actions = el('div', 'card-actions');
-    const reboot = el('button', 'reboot-control', 'Перезагрузить');
-    reboot.disabled = !gateway.rebootTransports?.length;
-    reboot.setAttribute('aria-label', 'Перезагрузить ' + gateway.name);
-    reboot.onclick = () => rebootGateway(gateway, reboot);
-    const remove = el('button', 'remove-control', '×');
-    remove.title = 'Удалить из отслеживания';
-    remove.setAttribute('aria-label', 'Удалить из отслеживания ' + gateway.name);
-    remove.onclick = () => forgetGateway(gateway, remove);
-    actions.append(reboot);
-    if (gateway.mode === 'mqtt') title.append(el('small', 'badge', 'MQTT'));
-    actions.append(remove);
-    card.append(title, address, model, actions);
-    $('#gateway-cards').append(card);
   }
-  if (!gateways.length) {
-    const node = empty(
-      'Подключите первый контроллер',
-      'Выберите найденный SLS в списке видимых контроллеров ниже.',
-    );
-    $('#gateway-cards').append(node);
-  }
-  $('#discovered-list').replaceChildren();
-  const discovered = discovery.devices
-    .filter((d) => !d.trackedId)
-    .sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
-  if (discovered.length) {
-    const table = el('table', 'discovery-table');
-    const head = el('thead');
-    const heading = el('tr');
-    const labels = ['Контроллер', 'Тип платы', 'IP', 'MAC', 'Прошивка', 'Аптайм', 'Источник', ''];
-    for (const label of labels) heading.append(el('th', '', label));
-    head.append(heading);
-    const body = el('tbody');
-    for (const device of discovered) {
-      const row = el('tr');
-      const values = [
-        device.name || 'SLS',
-        device.board || 'Неизвестная плата',
-        device.address || '—',
-        device.mac || (device.source === 'MQTT' ? '—' : device.id),
-        device.version || '—',
-        uptime(device.uptime),
-        device.source || 'LocalLink',
-      ];
-      values.forEach((value, i) => {
-        const cell = el('td', i >= 2 ? 'mono' : '', value);
-        cell.dataset.label = labels[i];
-        if (i === 2 && device.address) cell.replaceChildren(webLink('http://' + device.address));
-        if (i === 0) {
-          const dot = connectionDot(device.online);
-          dot.title = device.online
-            ? 'Есть свежие данные: ' + device.source
-            : 'Нет связи или нет свежих данных';
-          cell.prepend(dot);
-          cell.append(
-            el('small', '', (device.online ? '' : 'Нет свежих объявлений · ') + ago(device.lastSeen)),
-          );
-        }
-        row.append(cell);
-      });
-      const cell = el('td', 'discovery-actions');
-      const button = el('button', '', 'Добавить');
-      button.onclick = () => (device.source === 'MQTT' ? trackMqtt(device, button) : openConnect(device));
-      cell.append(button);
-      row.append(cell);
-      body.append(row);
-    }
-    table.append(head, body);
-    $('#discovered-list').append(table);
-  }
-  if (!discovered.length) {
-    const node = el('div', 'empty-discovery');
-    node.append(
-      el('span', 'orbit', '◎'),
-      el(
-        'div',
-        '',
-        discovery.devices.length ? 'Все найденные контроллеры добавлены' : 'Ожидаем объявления SLS',
-      ),
-      el(
-        'p',
-        '',
-        'Оставьте приложение открытым примерно на минуту. LocalLink должен быть включён на контроллере.',
-      ),
-    );
-    $('#discovered-list').append(node);
-  }
+  window.slsViews.overview(gateways, discovery);
   $('#overview-nav').classList.toggle('active', !state.selected);
 }
 async function poll() {
@@ -383,7 +278,7 @@ async function showOverview(record = true, skipConfirm = false) {
   state.switching++;
   $('#overview').hidden = false;
   $('#gateway-view').hidden = true;
-  $('#page-title').textContent = 'Контроллеры SLS';
+  $('#page-title').textContent = 'Контроллеры';
   if (record) commitRoute(null, 'devices');
   renderOverview();
   return true;
@@ -409,6 +304,7 @@ async function selectGateway(id, { record = true, tab = 'devices', skipConfirm =
   }
   if (state.selected === id) {
     showTab(tab, record);
+    await loadDetail(true);
     return;
   }
   state.selected = id;
@@ -422,7 +318,9 @@ async function selectGateway(id, { record = true, tab = 'devices', skipConfirm =
   $('#detail-subtitle').textContent = 'Загрузка состояния…';
   $('#devices-list').replaceChildren(empty('Загружаем устройства', 'Получаем состояние контроллера.'));
   $('#gateway-summary').replaceChildren();
-  if (state.data?.gateways.find((g) => g.id === id)?.mode === 'mqtt') tab = 'devices';
+  window.slsViews.reset(id);
+  $('#detail-ha').replaceChildren();
+  if (entry?.mode === 'mqtt' && ['mqtt', 'events'].includes(tab)) tab = 'devices';
   state.tab = null;
   showTab(tab, false);
   if (record) commitRoute(id, tab);
@@ -453,15 +351,16 @@ function renderDetail() {
   $('#detail-subtitle').textContent =
     `${g.webAddress ? new URL(g.webAddress).host : g.mqtt?.prefix || '—'} · ${g.info?.board || 'SLS'} · последнее чтение ${ago(g.lastSuccess)}`;
   const remote = g.mode === 'mqtt';
-  $('.tabs').hidden = remote;
-  $('#mqtt-only').hidden = !remote;
+  $('.tabs').hidden = false;
+  $('[data-tab="events"]').hidden = remote;
+  $('[data-tab="mqtt"]').hidden = remote || !g.mqtt?.enabled;
+  $('.mqtt-panel').hidden = remote;
+  $('#monitor-button').hidden = remote;
   $('#edit-gateway').textContent = remote ? 'Подключить HTTP-доступ' : 'Настройки доступа';
   document.querySelectorAll('.tab-content').forEach((node) => {
-    node.hidden = remote || node.id !== 'tab-' + state.tab;
+    node.hidden = node.id !== 'tab-' + state.tab || (remote && node.id === 'tab-devices');
   });
-  if (remote)
-    $('#mqtt-only-description').textContent =
-      'Префикс: ' + g.mqtt.prefix + ' · ' + (g.connected ? 'есть свежие данные' : 'нет свежих данных');
+  window.slsViews.detail();
   showNotice('#gateway-error', g.error || g.detailsError || g.configError);
   showNotice(
     '#address-warning',
@@ -483,7 +382,10 @@ function renderDetail() {
     $('#gateway-summary').append(node);
   }
   $('.pairing').hidden = !g.info?.services?.includes('zigbee');
-  if (remote) return;
+  if (remote) {
+    renderChecks();
+    return;
+  }
   renderDevices();
   renderPairing();
   renderChecks();
@@ -568,7 +470,9 @@ $('#join-button').onclick = (event) =>
 $('#refresh-gateway').onclick = (event) => busy(event.currentTarget, () => loadDetail(true));
 $('#edit-gateway').onclick = () => state.detail && openConnect(null, state.detail);
 function showTab(tab, record = true) {
-  if (!['devices', 'integration', 'events'].includes(tab)) tab = 'devices';
+  if (!['devices', 'mqtt', 'ha', 'integration', 'events'].includes(tab)) tab = 'devices';
+  const remote = state.data?.gateways.find((g) => g.id === state.selected)?.mode === 'mqtt';
+  if (remote && ['mqtt', 'events'].includes(tab)) tab = 'devices';
   const changed = state.tab !== tab;
   if (changed) state.eventView++;
   state.tab = tab;
@@ -578,7 +482,10 @@ function showTab(tab, record = true) {
     button.classList.toggle('active', selected);
     button.setAttribute('aria-selected', String(selected));
   }
-  for (const name of ['devices', 'integration', 'events']) $(`#tab-${name}`).hidden = name !== tab;
+  for (const name of ['devices', 'mqtt', 'ha', 'integration', 'events'])
+    $(`#tab-${name}`).hidden = name !== tab;
+  if (remote) $('#tab-devices').hidden = true;
+  window.slsViews.tabChanged();
   if (tab === 'events' && changed) {
     state.events = [];
     $('#events-cache-status').textContent = 'Загрузка кэша лога…';
@@ -600,13 +507,19 @@ function renderChecks() {
       g.mqtt?.enabled ? 'Включён' : 'Выключен',
       g.mqtt?.enabled ? 'success' : 'warning',
       'MQTT на SLS',
-      g.mqtt?.server ? `${g.mqtt.server}:${g.mqtt.port}` : 'Брокер не указан',
+      g.mode === 'mqtt'
+        ? 'Брокер HA'
+        : g.mqtt?.server
+          ? `${g.mqtt.server}:${g.mqtt.port}`
+          : 'Брокер не указан',
     ],
     [
-      g.mqtt?.discovery ? 'Включено' : 'Выключено',
+      g.mqtt?.discovery ? 'Включено' : g.mode === 'mqtt' ? 'Не получено' : 'Выключено',
       g.mqtt?.discovery ? 'success' : 'warning',
       'Автодобавление в HA',
-      `Префикс: ${g.mqtt?.discoveryPrefix || 'homeassistant'}`,
+      g.mode === 'mqtt'
+        ? 'Объявления, полученные от брокера HA'
+        : `Префикс: ${g.mqtt?.discoveryPrefix || 'homeassistant'}`,
     ],
     [
       monitor.connected ? 'Подключён' : g.monitoring ? 'Нет связи' : 'Не проверен',
@@ -767,7 +680,7 @@ function readRoute() {
   const tab = params.get('tab') || 'devices';
   return {
     id: id && /^[a-zA-Z0-9-]+$/.test(id) ? id : null,
-    tab: ['devices', 'integration', 'events'].includes(tab) ? tab : 'devices',
+    tab: ['devices', 'mqtt', 'ha', 'integration', 'events'].includes(tab) ? tab : 'devices',
   };
 }
 let routeIndex = Number.isInteger(history.state?.slsIndex) ? history.state.slsIndex : 0;
@@ -815,6 +728,7 @@ async function startPage() {
   commitRoute(route.id, route.tab, true);
   if (route.id) await selectGateway(route.id, { tab: route.tab, record: false, skipConfirm: true });
 }
+window.slsViews.init();
 void startPage();
 setInterval(() => {
   if (!document.hidden) void poll();

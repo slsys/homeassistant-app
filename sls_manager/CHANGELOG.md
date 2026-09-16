@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.10
+
+- Add compact block and table views for saved controllers, independent list filters, and sortable columns.
+- Search by name, host, IP, MAC, firmware and MQTT / LocalLink / LL; keep offline controllers at the bottom in both views.
+- Use the agreed column names and show only numeric addresses in the IP column.
+- Display the controller area from the Home Assistant device registry.
+- Browse MQTT Discovery devices and entity values, distinguish retained messages, and open corresponding devices and entities in HA.
+- Add a related HA objects tab using registries, MQTT subscriptions, HA relation search and explicit references in YAML, including includes and packages.
+- Enable the Home Assistant API permission for read-only data requests; report unavailable or incomplete relationship data.
+- Preserve browser navigation for the new controller tabs.
+
 ## 0.1.9
 
 - Restore the SLS sidebar icon style when Home Assistant redraws or recreates the menu.

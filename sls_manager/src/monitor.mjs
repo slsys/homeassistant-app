@@ -1,4 +1,5 @@
 import mqtt from 'mqtt';
+import { DiscoveryCatalog } from './discovery-catalog.mjs';
 import WebSocket from 'ws';
 import { randomUUID } from 'node:crypto';
 import { requestGateway } from './gateway.mjs';
@@ -20,6 +21,7 @@ function ownsConfig(value, prefix) {
 export class MqttMonitor {
   constructor() {
     this.configs = new Set();
+    this.catalog = new DiscoveryCatalog();
     this.status = { connected: false, bridgeState: null, lastMessage: null, discoveryCount: 0, error: null };
   }
   start(config) {
@@ -61,6 +63,7 @@ export class MqttMonitor {
       // Rebuild from retained configs after each reconnect; a config may have
       // been removed while this client was offline.
       this.configs.clear();
+      this.catalog.clear();
       this.status.discoveryCount = 0;
       client.subscribe([`${prefix}/#`, `${discovery}/#`], { qos: 0 }, (error, granted) => {
         if (error || granted?.some((item) => item.qos === 128))
@@ -80,6 +83,7 @@ export class MqttMonitor {
     });
     on('message', (topic, payload, packet) => {
       if (payload.length > 65536) return;
+      this.catalog.ingest(topic, payload, packet);
       if (topic === `${prefix}/bridge/state`) {
         this.status.bridgeState = payload.toString();
         this.status.bridgeStateRetained = packet.retain;
@@ -104,6 +108,7 @@ export class MqttMonitor {
     this.client = null;
     client?.end(true);
     this.configs.clear();
+    this.catalog.clear();
     this.status.connected = false;
   }
 }

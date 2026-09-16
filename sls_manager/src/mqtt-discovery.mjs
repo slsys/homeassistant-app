@@ -1,4 +1,5 @@
 import mqtt from 'mqtt';
+import { DiscoveryCatalog } from './discovery-catalog.mjs';
 import { randomUUID } from 'node:crypto';
 import { isIPv4 } from 'node:net';
 
@@ -38,6 +39,7 @@ export class MqttDiscovery {
     this.getConfig = getConfig;
     this.connect = connect;
     this.devices = new Map();
+    this.catalog = new DiscoveryCatalog();
     this.states = new Map();
     this.status = { connected: false, error: null };
     this.stopped = true;
@@ -61,6 +63,7 @@ export class MqttDiscovery {
           if (this.client === client && !this.stopped) handler(...args);
         });
       on('connect', () => {
+        this.catalog.clear();
         this.status = { connected: true, error: null };
         // Unknown prefixes can have several levels. ingest retains only SLS
         // heartbeats, availability and HA Discovery metadata; never publishes.
@@ -90,6 +93,7 @@ export class MqttDiscovery {
   }
   ingest(topic, payload, { retain = false } = {}, now = Date.now()) {
     if (payload.length > 65536 || topic.length > 500) return;
+    this.catalog.ingest(topic, payload, { retain }, now);
     const bridge = topic.match(/^(.+)\/bridge\/(config|state)$/);
     if (bridge && validPrefix(bridge[1])) {
       const [, prefix, type] = bridge;

@@ -12,10 +12,11 @@ import { MqttMonitor, EventMonitor } from './monitor.mjs';
 import { publishReboot } from './mqtt-command.mjs';
 
 export class Manager {
-  constructor(store, discovery, { pollInterval = 60, mqttDiscovery = null } = {}) {
+  constructor(store, discovery, { pollInterval = 60, mqttDiscovery = null, homeAssistant = null } = {}) {
     this.store = store;
     this.discovery = discovery;
     this.mqttDiscovery = mqttDiscovery;
+    this.homeAssistant = homeAssistant;
     this.pollInterval = pollInterval;
     this.runtimes = new Map();
     this.mutations = Promise.resolve();
@@ -57,6 +58,7 @@ export class Manager {
     }
     return local.map((d) => ({
       ...d,
+      ha: this.homeAssistant?.metadata(d.mqttPrefix) || null,
       trackedId:
         this.store.entries.find(
           (e) =>
@@ -165,6 +167,14 @@ export class Manager {
     return this.runtimes.get(entry.id);
   }
   publicEntry(entry) {
+    const result = this.rawEntry(entry);
+    result.ha = this.homeAssistant?.metadata(result.mqtt?.prefix) || null;
+    result.mqttCatalogLimited = Boolean(
+      this.mqttDiscovery?.catalog.limited || this.runtimes.get(entry.id)?.monitor.catalog.limited,
+    );
+    return result;
+  }
+  rawEntry(entry) {
     const { local, remote } = this.observation(entry);
     const localLink = Boolean(local?.online);
     const rebootTransports = this.rebootTransports(entry);
@@ -191,12 +201,17 @@ export class Manager {
           version: observed?.version,
           mem_heap_free: observed?.memory,
         },
-        mqtt: { enabled: true, prefix: entry.mqttPrefix },
+        mqtt: {
+          enabled: true,
+          prefix: entry.mqttPrefix,
+          discovery: this.mqttDiscovery?.catalog.entries(entry.mqttPrefix).length ? true : null,
+        },
         monitoring: true,
         monitor: {
           connected: Boolean(this.mqttDiscovery?.status.connected),
           bridgeState: live?.online ? 'online' : 'offline',
           lastMessage: live?.lastSeen,
+          discoveryCount: this.mqttDiscovery?.catalog.entries(entry.mqttPrefix).length || 0,
         },
         devices: [],
         error: null,
@@ -238,7 +253,7 @@ export class Manager {
   }
   state() {
     return {
-      version: '0.1.9',
+      version: '0.1.10',
       sidebarInstallation: this.sidebarInstallation || null,
       discovery: {
         ...this.discovery.status,
@@ -349,7 +364,7 @@ export class Manager {
   }
   async details(id, force = false) {
     const entry = this.entry(id);
-    if (entry.mode === 'mqtt') return this.publicEntry(entry);
+    if (entry.mode === 'mqtt') return { ...this.publicEntry(entry), mqttDevices: this.mqttDevices(entry) };
     const rt = this.runtime(entry);
     if (!rt.lastSuccess || force) await this.refresh(entry, force);
     if (!rt.detailsPending && (force || Date.now() - rt.detailsAt > 15000)) {
@@ -386,12 +401,31 @@ export class Manager {
     return {
       ...this.publicEntry(entry),
       devices: rt.devices,
+      mqttDevices: this.mqttDevices(entry),
       coordinator: rt.coordinator,
       joinUntil: rt.joinUntil,
       detailsAt: rt.detailsAt,
       detailsError: rt.detailsError,
       configError: rt.configError,
     };
+  }
+  mqttDevices(entry) {
+    const prefix = entry.mqttPrefix || this.runtimes.get(entry.id)?.mqtt?.prefix;
+    if (!prefix) return [];
+    const local = this.runtimes.get(entry.id)?.monitor.catalog?.devices(prefix) || [];
+    const remote = this.mqttDiscovery?.catalog?.devices(prefix) || [];
+    const devices = new Map(local.map((d) => [d.id, d]));
+    for (const device of remote) devices.set(device.id, device);
+    const result = [...devices.values()];
+    return this.homeAssistant ? this.homeAssistant.enrichDevices(result) : result;
+  }
+  async haObjects(id) {
+    const entry = this.entry(id);
+    const prefix = entry.mqttPrefix || this.runtimes.get(id)?.mqtt?.prefix;
+    if (!prefix)
+      return { objects: [], warnings: ['MQTT-префикс контроллера ещё не известен.'], updatedAt: null };
+    if (!this.homeAssistant) return { objects: [], warnings: ['HA API недоступен.'], updatedAt: null };
+    return this.homeAssistant.objects(prefix, this.mqttDevices(entry));
   }
   async join(id, duration) {
     if (!Number.isInteger(duration) || duration < 0 || duration > 254)
@@ -479,6 +513,7 @@ export class Manager {
   }
   close() {
     this.stopped = true;
+    this.homeAssistant?.close();
     clearInterval(this.timer);
     for (const rt of this.runtimes.values()) {
       rt.monitor.stop();

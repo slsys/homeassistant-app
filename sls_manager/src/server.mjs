@@ -7,6 +7,7 @@ const publicDirectory = new URL('../public/', import.meta.url);
 const files = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/theme.js': ['theme.js', 'text/javascript; charset=utf-8'],
+  '/controllers.js': ['controllers.js', 'text/javascript; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   '/log-time.js': ['log-time.js', 'text/javascript; charset=utf-8'],
   '/style.css': ['style.css', 'text/css; charset=utf-8'],
@@ -78,11 +79,12 @@ export function createServer(manager, { standalone = false } = {}) {
       if (url.pathname === '/api/mqtt-tracking' && req.method === 'POST')
         return json(201, await manager.trackMqtt((await jsonBody(req)).prefix));
       const match = url.pathname.match(
-        /^\/api\/gateways\/([a-zA-Z0-9-]+)(?:\/(refresh|join|mqtt|monitor|events|reboot))?$/,
+        /^\/api\/gateways\/([a-zA-Z0-9-]+)(?:\/(refresh|join|mqtt|monitor|events|reboot|ha))?$/,
       );
       if (!match) return json(404, { error: 'Не найдено' });
       const [, id, action] = match;
       if (req.method === 'GET' && !action) return json(200, await manager.details(id));
+      if (req.method === 'GET' && action === 'ha') return json(200, await manager.haObjects(id));
       if (req.method === 'GET' && action === 'events') return json(200, manager.events(id));
       if (!['POST', 'DELETE'].includes(req.method)) return json(405, { error: 'Метод не поддерживается' });
       const body = await jsonBody(req);

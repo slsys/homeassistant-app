@@ -3,6 +3,7 @@ import { resolve, join } from 'node:path';
 import { Store } from './store.mjs';
 import { LocalLink } from './locallink.mjs';
 import { MqttDiscovery } from './mqtt-discovery.mjs';
+import { HomeAssistant } from './home-assistant.mjs';
 import { Manager } from './manager.mjs';
 import { createServer } from './server.mjs';
 import { installSidebar } from './sidebar-install.mjs';
@@ -22,7 +23,8 @@ const store = new Store(directory);
 await store.load();
 const discovery = new LocalLink(options);
 const mqttDiscovery = new MqttDiscovery();
-const manager = new Manager(store, discovery, { pollInterval, mqttDiscovery });
+const homeAssistant = new HomeAssistant();
+const manager = new Manager(store, discovery, { pollInterval, mqttDiscovery, homeAssistant });
 const server = createServer(manager, { standalone });
 const port = Number(process.env.SLS_PORT || 8099);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid SLS_PORT');
@@ -67,10 +69,11 @@ server.on('error', (error) => {
 });
 server.listen(port, standalone ? '127.0.0.1' : '0.0.0.0', () => {
   console.log(
-    `SLS 0.1.9 started (${standalone ? 'localhost development' : 'Home Assistant Ingress'}), port ${port}`,
+    `SLS 0.1.10 started (${standalone ? 'localhost development' : 'Home Assistant Ingress'}), port ${port}`,
   );
   discovery.start();
   void mqttDiscovery.start();
+  homeAssistant.start();
   manager.start();
   if (!standalone)
     void readFile(new URL('../frontend/sls-sidebar.js', import.meta.url), 'utf8')
