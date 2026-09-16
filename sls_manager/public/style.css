@@ -1432,6 +1432,10 @@ button.mqtt-shortcut:disabled {
   justify-content: space-between;
   gap: 10px;
   align-items: flex-start;
+  flex-wrap: wrap;
+  padding-bottom: 10px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--line);
 }
 .device-detail-head h2 {
   font-size: 17px;
@@ -1442,12 +1446,10 @@ button.mqtt-shortcut:disabled {
   margin: 4px 0 0;
 }
 .device-facts {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1.6fr;
-  gap: 12px;
-  padding: 14px 0;
-  margin-bottom: 8px;
-  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 20px;
+  margin-left: auto;
 }
 .device-facts small {
   display: block;
@@ -1562,25 +1564,28 @@ button.mqtt-shortcut:disabled {
   overflow-wrap: anywhere;
 }
 .ha-table th:first-child {
-  width: 24%;
+  width: 21%;
 }
 .ha-table th:nth-child(2) {
-  width: 11%;
+  width: 8%;
 }
 .ha-table th:nth-child(3) {
-  width: 10%;
+  width: 9%;
 }
 .ha-table th:nth-child(4) {
-  width: 12%;
+  width: 9%;
 }
 .ha-table th:nth-child(5) {
-  width: 25%;
+  width: 22%;
 }
 .ha-table th:nth-child(6) {
   width: 10%;
 }
+.ha-table th:nth-child(7) {
+  width: 14%;
+}
 .ha-table th:last-child {
-  width: 8%;
+  width: 7%;
 }
 .ha-table td small {
   display: block;
@@ -1635,10 +1640,7 @@ button.mqtt-shortcut:disabled {
     grid-template-columns: 195px minmax(0, 1fr);
   }
   .device-facts {
-    grid-template-columns: 1fr 1fr;
-  }
-  .device-facts > div:last-child {
-    grid-column: 1 / -1;
+    gap: 8px 14px;
   }
 }
 @media (max-width: 600px) {
@@ -1744,4 +1746,45 @@ button.mqtt-shortcut:disabled {
 th[aria-sort='ascending'],
 th[aria-sort='descending'] {
   color: var(--accent);
+}
+
+/* These regions are rebuilt from snapshots; preserveScroll restores their position. */
+#gateway-cards,
+#discovered-list,
+#mqtt-workspace-panel,
+#ha-objects,
+#devices-list,
+#gateway-nav,
+#events-list {
+  overflow-anchor: none;
+}
+.is-rebooting {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.reboot-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: reboot-spin 0.85s linear infinite;
+}
+@keyframes reboot-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .reboot-spinner {
+    animation: none;
+  }
+}
+
+.ha-last-changed {
+  white-space: nowrap;
 }

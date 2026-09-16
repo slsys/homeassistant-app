@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.11
+
+- Keep the MQTT controller first, show firmware only for the controller, remove the identifier field and compact the device header.
+- Rename the device tab to Zigbee and keep MQTT devices on their own tab for remote controllers.
+- Search MQTT device entities by name, ID, type, value and topic; filter matching entity rows.
+- Show and sort the last state change time in the HA objects table.
+- Preserve page and list scroll positions during automatic updates, including the log when reading earlier lines.
+- Animate reboot controls until fresh HTTP, LocalLink or non-retained MQTT uptime confirms the controller restart.
+- Use the stable HA relation search API and report the failing operation and error code.
+- Resolve absolute HA YAML includes through the configuration mount, match directory include behavior, keep readable entries after partial failures and report file-specific diagnostics.
+
 ## 0.1.10
 
 - Add compact block and table views for saved controllers, independent list filters, and sortable columns.

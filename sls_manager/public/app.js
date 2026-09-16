@@ -119,6 +119,106 @@ function empty(title, description) {
   return node;
 }
 
+function preserveScroll(render) {
+  const selectors = [
+    '.sidebar',
+    'main',
+    '#gateway-nav',
+    '#gateway-cards',
+    '#discovered-list',
+    '#gateway-cards .controller-table-wrap',
+    '#discovered-list .controller-table-wrap',
+    '#mqtt-device-list',
+    '#mqtt-device-detail',
+    '#mqtt-device-detail .entity-table-wrap',
+    '#mqtt-device-select',
+    '#devices-list',
+    '#ha-objects',
+    '#ha-kinds',
+  ];
+  const positions = selectors.flatMap((selector) => {
+    const node = $(selector);
+    return node ? [{ selector, top: node.scrollTop, left: node.scrollLeft }] : [];
+  });
+  const top = window.scrollY,
+    left = window.scrollX;
+  try {
+    return render();
+  } finally {
+    for (const position of positions) {
+      const node = $(position.selector);
+      if (node) {
+        node.scrollTop = position.top;
+        node.scrollLeft = position.left;
+      }
+    }
+    window.scrollTo({ top, left, behavior: 'instant' });
+  }
+}
+const rebootRequests = new Map();
+const rebootNotices = new Map();
+function reconcileReboot(gateway) {
+  const previous = rebootNotices.get(gateway.id);
+  const status = gateway.reboot;
+  if (
+    previous &&
+    (!status ||
+      status.startedAt < previous.startedAt ||
+      (status.startedAt === previous.startedAt && previous.confirmedAt && !status.confirmedAt))
+  ) {
+    gateway.reboot = previous;
+    return;
+  }
+  if (status?.confirmedAt && previous?.pending && previous.startedAt === status.startedAt)
+    toast(gateway.name + ': перезагрузка подтверждена (' + status.source + ')');
+  if (status) rebootNotices.set(gateway.id, status);
+}
+function rebootButton(button, gateway, compact = false) {
+  if (!button || !gateway) return;
+  const status = rebootRequests.get(gateway.id) || gateway.reboot;
+  const pending = Boolean(status?.pending);
+  button.dataset.rebootId = gateway.id;
+  button.dataset.rebootCompact = String(compact);
+  button.dataset.rebootLabel ||= button.textContent;
+  button.disabled = pending || !gateway.rebootTransports?.length;
+  button.classList.toggle('is-rebooting', pending);
+  button.setAttribute('aria-busy', String(pending));
+  button.title = pending
+    ? (status.delayed ? 'Подтверждение ещё не получено. ' : '') + 'Ожидаем новый аптайм после перезагрузки'
+    : 'Перезагрузить ' + gateway.name;
+  button.setAttribute('aria-label', button.title);
+  const key = String(pending) + ':' + String(compact);
+  if (button.dataset.rebootView !== key) {
+    button.dataset.rebootView = key;
+    if (pending) {
+      const spinner = el('span', 'reboot-spinner');
+      spinner.setAttribute('aria-hidden', 'true');
+      button.replaceChildren(spinner);
+      if (!compact) button.append(document.createTextNode('Перезагрузка…'));
+    } else button.textContent = button.dataset.rebootLabel;
+  }
+}
+function updateReboots() {
+  const gateways = state.data?.gateways || [];
+  for (const gateway of gateways) reconcileReboot(gateway);
+  for (const button of document.querySelectorAll('[data-reboot-id]')) {
+    const gateway = gateways.find((g) => g.id === button.dataset.rebootId);
+    if (gateway) rebootButton(button, gateway, button.dataset.rebootCompact === 'true');
+  }
+  if (state.detail) {
+    const gateway = gateways.find((g) => g.id === state.detail.id) || state.detail;
+    state.detail.reboot = gateway.reboot;
+    rebootButton($('#detail-reboot'), gateway);
+    rebootButton($('#reboot-button'), gateway);
+    const status = rebootRequests.get(gateway.id) || gateway.reboot;
+    const message = status?.pending
+      ? status.delayed
+        ? 'Перезагрузка пока не подтверждена. Ожидаем новые данные с аптаймом после запуска.'
+        : 'Перезагрузка: ожидаем новые данные контроллера с аптаймом после запуска.'
+      : null;
+    showNotice('#reboot-status', message);
+  }
+}
 function field(label, value, className = '') {
   const node = el('div', 'compact-field ' + className);
   node.append(el('small', '', label), el('span', '', value));
@@ -168,6 +268,9 @@ async function forgetGateway(gateway, button) {
   });
 }
 function renderOverview() {
+  return preserveScroll(renderOverviewContent);
+}
+function renderOverviewContent() {
   if (!state.data) return;
   const { gateways, discovery } = state.data;
   showNotice('#sidebar-installation', state.data.sidebarInstallation?.message);
@@ -216,8 +319,10 @@ async function poll() {
   state.polling = true;
   try {
     state.data = await api('state');
+    for (const gateway of state.data.gateways) reconcileReboot(gateway);
     showNotice('#connection-error', null);
     renderOverview();
+    updateReboots();
   } catch (error) {
     showNotice('#connection-error', `Нет связи с SLS. ${error.message}`);
   } finally {
@@ -320,7 +425,7 @@ async function selectGateway(id, { record = true, tab = 'devices', skipConfirm =
   $('#gateway-summary').replaceChildren();
   window.slsViews.reset(id);
   $('#detail-ha').replaceChildren();
-  if (entry?.mode === 'mqtt' && ['mqtt', 'events'].includes(tab)) tab = 'devices';
+  if (entry?.mode === 'mqtt' && ['devices', 'events'].includes(tab)) tab = 'mqtt';
   state.tab = null;
   showTab(tab, false);
   if (record) commitRoute(id, tab);
@@ -336,6 +441,9 @@ async function loadDetail(force = false) {
   try {
     const data = await api(`gateways/${id}${force ? '/refresh' : ''}`, force ? {} : undefined);
     if (id !== state.selected || switching !== state.switching) return;
+    reconcileReboot(data);
+    const summary = state.data?.gateways.find((g) => g.id === data.id);
+    if (summary) summary.reboot = data.reboot;
     state.detail = data;
     renderDetail();
   } catch (error) {
@@ -345,6 +453,9 @@ async function loadDetail(force = false) {
   }
 }
 function renderDetail() {
+  return preserveScroll(renderDetailContent);
+}
+function renderDetailContent() {
   const g = state.detail;
   if (!g) return;
   $('#page-title').textContent = g.name;
@@ -353,7 +464,8 @@ function renderDetail() {
   const remote = g.mode === 'mqtt';
   $('.tabs').hidden = false;
   $('[data-tab="events"]').hidden = remote;
-  $('[data-tab="mqtt"]').hidden = remote || !g.mqtt?.enabled;
+  $('[data-tab="devices"]').hidden = remote;
+  $('[data-tab="mqtt"]').hidden = !g.mqtt?.enabled;
   $('.mqtt-panel').hidden = remote;
   $('#monitor-button').hidden = remote;
   $('#edit-gateway').textContent = remote ? 'Подключить HTTP-доступ' : 'Настройки доступа';
@@ -361,6 +473,7 @@ function renderDetail() {
     node.hidden = node.id !== 'tab-' + state.tab || (remote && node.id === 'tab-devices');
   });
   window.slsViews.detail();
+  updateReboots();
   showNotice('#gateway-error', g.error || g.detailsError || g.configError);
   showNotice(
     '#address-warning',
@@ -397,6 +510,9 @@ function renderDetail() {
   }
 }
 function renderDevices() {
+  return preserveScroll(renderDevicesContent);
+}
+function renderDevicesContent() {
   const g = state.detail;
   if (!g) return;
   const filter = $('#device-search').value.toLowerCase();
@@ -472,7 +588,7 @@ $('#edit-gateway').onclick = () => state.detail && openConnect(null, state.detai
 function showTab(tab, record = true) {
   if (!['devices', 'mqtt', 'ha', 'integration', 'events'].includes(tab)) tab = 'devices';
   const remote = state.data?.gateways.find((g) => g.id === state.selected)?.mode === 'mqtt';
-  if (remote && ['mqtt', 'events'].includes(tab)) tab = 'devices';
+  if (remote && ['devices', 'events'].includes(tab)) tab = 'mqtt';
   const changed = state.tab !== tab;
   if (changed) state.eventView++;
   state.tab = tab;
@@ -577,20 +693,39 @@ $('#mqtt-form').onsubmit = async (event) => {
   });
 };
 async function rebootGateway(gateway, button) {
-  if (!gateway) return;
+  gateway = state.data?.gateways.find((g) => g.id === gateway?.id) || gateway;
+  if (!gateway || rebootRequests.has(gateway.id) || gateway.reboot?.pending) return;
   if (
-    await confirmAction(
+    !(await confirmAction(
       'Перезагрузить ' + gateway.name + '?',
       'Связь с SLS и его устройствами временно прервётся.',
       gateway.rebootTransports || [],
-    )
+    ))
   )
-    await busy(button, async () => {
-      const result = await api('gateways/' + gateway.id + '/reboot', {
-        transport: $('#reboot-transport').value || 'auto',
-      });
-      toast('Команда перезагрузки отправлена через ' + result.transport.toUpperCase());
+    return;
+  if (rebootRequests.has(gateway.id)) return;
+  const pending = { pending: true, startedAt: Date.now() };
+  rebootRequests.set(gateway.id, pending);
+  rebootButton(button, gateway, button.dataset.rebootCompact === 'true');
+  updateReboots();
+  try {
+    const result = await api('gateways/' + gateway.id + '/reboot', {
+      transport: $('#reboot-transport').value || 'auto',
     });
+    const summary = state.data?.gateways.find((g) => g.id === gateway.id);
+    if (summary) summary.reboot = result.reboot;
+    if (state.detail?.id === gateway.id) state.detail.reboot = result.reboot;
+    rebootNotices.set(gateway.id, result.reboot);
+    toast(
+      'Команда отправлена через ' + result.transport.toUpperCase() + '. Ожидаем подтверждение перезагрузки.',
+    );
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    rebootRequests.delete(gateway.id);
+    updateReboots();
+    void poll();
+  }
 }
 $('#reboot-button').onclick = (event) => rebootGateway(state.detail, event.currentTarget);
 $('#forget-button').onclick = (event) => forgetGateway(state.detail, event.currentTarget);
@@ -654,6 +789,7 @@ function renderEvents() {
   const container = $('#events-list');
   const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50;
   const scrollLeft = container.scrollLeft;
+  const scrollTop = container.scrollTop;
   const filter = $('#event-search').value.toLowerCase();
   const events = state.events.filter((e) => e.category === 'log' && e.message.toLowerCase().includes(filter));
   const renderedIds = events.map((event) => event.id).join(',');
@@ -670,7 +806,7 @@ function renderEvents() {
     container.append(row);
   }
   if (!events.length) container.append(el('p', 'muted', 'Ожидание новых сообщений лога…'));
-  if (atBottom) container.scrollTop = container.scrollHeight;
+  container.scrollTop = atBottom ? container.scrollHeight : scrollTop;
   container.scrollLeft = scrollLeft;
 }
 $('#event-search').oninput = renderEvents;

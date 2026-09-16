@@ -89,6 +89,17 @@ export class MqttMonitor {
         this.status.bridgeStateRetained = packet.retain;
       }
       if (topic.startsWith(`${prefix}/`) && !packet.retain) this.status.lastMessage = Date.now();
+      if (topic === `${prefix}/bridge/config` && !packet.retain) {
+        try {
+          const data = JSON.parse(payload.toString());
+          if (Number.isFinite(data.Uptime) && data.Uptime >= 0) {
+            this.status.liveUptime = data.Uptime;
+            this.status.liveUptimeAt = Date.now();
+          }
+        } catch {
+          /* Ignore malformed heartbeat data. */
+        }
+      }
       if (!topic.startsWith(`${discovery}/`) || !topic.endsWith('/config')) return;
       if (!payload.length) this.configs.delete(topic);
       else {

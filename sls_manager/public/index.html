@@ -26,7 +26,7 @@
         <header class="page-header app-header">
           <h1 id="page-title">Контроллеры</h1>
           <div class="topbar-tools">
-            <span class="app-version">v0.1.10</span>
+            <span class="app-version">v0.1.11</span>
             <label class="theme-control"
               ><span>Тема</span
               ><select id="theme-select" aria-label="Тема оформления">
@@ -119,11 +119,12 @@
               ><button id="edit-gateway">Настройки доступа</button>
             </div>
           </header>
+          <div id="reboot-status" class="notice" role="status" hidden></div>
           <div id="gateway-error" class="notice danger" hidden></div>
           <div id="address-warning" class="notice" hidden></div>
           <div class="gateway-summary" id="gateway-summary"></div>
           <div class="tabs" role="tablist" aria-label="Разделы контроллера">
-            <button class="active" role="tab" aria-selected="true" data-tab="devices">Устройства</button
+            <button class="active" role="tab" aria-selected="true" data-tab="devices">Zigbee</button
             ><button role="tab" aria-selected="false" data-tab="mqtt">Устройства MQTT</button
             ><button role="tab" aria-selected="false" data-tab="ha">Объекты HA</button
             ><button role="tab" aria-selected="false" data-tab="integration">Интеграция с HA</button

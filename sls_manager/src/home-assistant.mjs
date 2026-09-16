@@ -83,7 +83,20 @@ export class HomeAssistant {
           clearTimeout(request.timer);
           this.pending.delete(message.id);
           if (message.success) request.resolve(message.result);
-          else request.reject(new Error('HA API: команда недоступна (' + request.type + ')'));
+          else {
+            const code = clean(message.error?.code, 80) || 'unknown_error';
+            const reasons = {
+              invalid_format: 'неподдерживаемый формат запроса',
+              unknown_command: 'команда не поддерживается этой версией HA',
+              unauthorized: 'недостаточно прав',
+              not_found: 'объект не найден',
+            };
+            request.reject(
+              new Error(
+                'HA API: ' + request.type + ' — ' + (reasons[code] || 'ошибка команды') + ' (' + code + ')',
+              ),
+            );
+          }
         }
       });
     }).finally(() => {
@@ -98,7 +111,7 @@ export class HomeAssistant {
       const id = ++this.sequence;
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error('HA API: время ожидания истекло'));
+        reject(new Error('HA API: ' + type + ' — время ожидания истекло'));
       }, 8000);
       this.pending.set(id, { resolve, reject, timer, type });
       this.socket.send(JSON.stringify({ ...parameters, id, type }), (error) => {
@@ -307,8 +320,8 @@ export class HomeAssistant {
               discoveryTopic ? 'Discovery' : yamlById.has(entity.entity_id) ? 'YAML' : 'HA',
             );
         }
-      } catch {
-        warnings.push('Диагностика MQTT в HA недоступна для части устройств.');
+      } catch (error) {
+        warnings.push('Диагностика MQTT: ' + error.message);
       }
     });
     for (const entry of this.entities)
@@ -344,13 +357,12 @@ export class HomeAssistant {
           const related = await this.call('search/related', {
             item_type: type,
             item_id: id,
-            include_disabled_entities: true,
           });
           for (const kind of ['automation', 'script', 'scene', 'group'])
             for (const target of related?.[kind] || [])
               if (addEntity(target, 'HA: ссылка на ' + id)) seeds.push(['entity', target]);
-        } catch {
-          warnings.push('Часть связей HA недоступна.');
+        } catch (error) {
+          warnings.push('Часть связей HA недоступна: ' + error.message);
         }
       });
       let more = true;
@@ -386,6 +398,7 @@ export class HomeAssistant {
             name: device?.name_by_user || device?.name || row.id,
             area: this.areas.get(device?.area_id) || null,
             value: device?.model || '—',
+            lastChanged: null,
             url: deviceUrl(row.id),
           };
         }
@@ -408,6 +421,7 @@ export class HomeAssistant {
               ? clean(String(state.state), 1000) +
                 (state.attributes?.unit_of_measurement ? ' ' + state.attributes.unit_of_measurement : '')
               : 'Нет состояния',
+          lastChanged: state?.last_changed ? Date.parse(state.last_changed) || null : null,
           url,
         };
       }),

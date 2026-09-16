@@ -196,7 +196,7 @@ window.slsViews = (() => {
     const reboot = el('button', 'reboot-control', compact ? '↻' : 'Перезагрузить');
     reboot.title = 'Перезагрузить ' + c.name;
     reboot.setAttribute('aria-label', reboot.title);
-    reboot.disabled = !c.raw.rebootTransports?.length;
+    rebootButton(reboot, c.raw, compact);
     reboot.onclick = () => rebootGateway(c.raw, reboot);
     const remove = el('button', 'remove-control', '×');
     remove.title = 'Убрать ' + c.name + ' из отслеживания';
@@ -365,13 +365,42 @@ window.slsViews = (() => {
     $('#ha-objects').replaceChildren(empty('Объекты HA', 'Откройте вкладку для загрузки.'));
   }
   function mqttDevices() {
+    return preserveScroll(renderMqttDevices);
+  }
+  function renderMqttDevices() {
     const g = state.detail;
     if (!g) return;
     const query = $('#mqtt-device-filter').value.toLowerCase().trim();
-    const devices = (g.mqttDevices || []).filter((d) =>
-      [d.name, d.model, d.manufacturer, d.area, ...d.identifiers].join(' ').toLowerCase().includes(query),
-    );
-    if (!devices.some((d) => d.id === deviceId)) deviceId = devices[0]?.id || null;
+    const includes = (values) =>
+      values
+        .filter((value) => value != null)
+        .join(' ')
+        .toLowerCase()
+        .includes(query);
+    const deviceMatches = (device) =>
+      includes([device.name, device.model, device.manufacturer, device.area, ...device.identifiers]);
+    const entityMatches = (entity) =>
+      includes([
+        entity.name,
+        entity.entityId,
+        entity.uniqueId,
+        entity.domain,
+        entity.value,
+        entity.unit,
+        entity.valueSource,
+        entity.disabled ? 'Отключена' : '',
+        entity.retained ? 'Сохранённое retained' : 'Новое сообщение',
+        entity.stateTopic,
+        entity.commandTopic,
+        entity.discoveryTopic,
+        ago(entity.receivedAt || entity.stateUpdatedAt),
+      ]);
+    const matches = (device) => deviceMatches(device) || device.entities.some(entityMatches);
+    const devices = [...(g.mqttDevices || [])]
+      .filter((device) => device.controller || matches(device))
+      .sort((a, b) => Number(b.controller) - Number(a.controller));
+    if (!devices.some((d) => d.id === deviceId))
+      deviceId = devices.find(matches)?.id || devices[0]?.id || null;
     $('#mqtt-device-count').textContent = devices.length + ' / ' + (g.mqttDevices?.length || 0);
     const list = $('#mqtt-device-list'),
       select = $('#mqtt-device-select'),
@@ -387,7 +416,7 @@ window.slsViews = (() => {
         button = el('button', 'device-list-item' + (device.id === deviceId ? ' active' : ''));
       button.setAttribute('aria-pressed', String(device.id === deviceId));
       button.append(
-        el('strong', '', device.name),
+        el('strong', '', device.name + (device.controller ? ' · Контроллер' : '')),
         el(
           'small',
           '',
@@ -402,7 +431,7 @@ window.slsViews = (() => {
       };
       row.append(button, haLink(device.haUrl, '↗', 'device-mqtt-link'));
       list.append(row);
-      const option = el('option', '', device.name);
+      const option = el('option', '', device.name + (device.controller ? ' · Контроллер' : ''));
       option.value = device.id;
       option.selected = device.id === deviceId;
       select.append(option);
@@ -424,17 +453,15 @@ window.slsViews = (() => {
       el('h2', '', device.name),
       el('p', 'muted', [device.manufacturer, device.model].filter(Boolean).join(' · ')),
     );
-    header.append(title, haLink(device.haUrl));
     const facts = el('div', 'device-facts');
-    for (const [label, value] of [
-      ['Пространство', device.area || (device.haDeviceId ? 'Не назначено' : '—')],
-      ['Прошивка', device.version || '—'],
-      ['Идентификатор', device.identifiers.join(', ')],
-    ]) {
+    const fields = [['Пространство', device.area || (device.haDeviceId ? 'Не назначено' : '—')]];
+    if (device.controller) fields.push(['Прошивка', g.info?.version || device.version || '—']);
+    for (const [label, value] of fields) {
       const item = el('div');
       item.append(el('small', '', label), el('span', '', value));
       facts.append(item);
     }
+    header.append(title, facts, haLink(device.haUrl));
     const table = el('table', 'entity-table'),
       thead = el('thead'),
       head = el('tr'),
@@ -452,7 +479,10 @@ window.slsViews = (() => {
       mqttDevices,
     );
     thead.append(head);
-    for (const entity of sorted(device.entities, 'entities', (e, key) =>
+    const entities = device.entities.filter(
+      (entity) => !query || deviceMatches(device) || entityMatches(entity),
+    );
+    for (const entity of sorted(entities, 'entities', (e, key) =>
       key === 'receivedAt' ? e.receivedAt || e.stateUpdatedAt : e[key],
     )) {
       const row = el('tr'),
@@ -494,6 +524,13 @@ window.slsViews = (() => {
       row.append(name, el('td', 'muted', entity.domain), value, received, link);
       tbody.append(row);
     }
+    if (!entities.length) {
+      const row = el('tr'),
+        cell = el('td', 'muted', query ? 'Нет сущностей, подходящих под фильтр' : 'Нет сущностей');
+      cell.colSpan = 5;
+      row.append(cell);
+      tbody.append(row);
+    }
     table.append(thead, tbody);
     const tableWrap = el('div', 'entity-table-wrap');
     tableWrap.append(table);
@@ -508,7 +545,6 @@ window.slsViews = (() => {
     topics.open = topicsOpen;
     detail.append(
       header,
-      facts,
       tableWrap,
       topics,
       el(
@@ -537,11 +573,8 @@ window.slsViews = (() => {
       el('span', 'area-pill', 'Пространство: ' + area(g.ha)),
       haLink(g.ha?.url),
     );
-    $('#detail-reboot').disabled = !g.rebootTransports?.length;
-    $('#mqtt-workspace-panel').hidden = !(
-      (g.mode === 'mqtt' && state.tab === 'devices') ||
-      state.tab === 'mqtt'
-    );
+    rebootButton($('#detail-reboot'), g);
+    $('#mqtt-workspace-panel').hidden = state.tab !== 'mqtt';
     if (!$('#mqtt-workspace-panel').hidden) mqttDevices();
     if (state.tab === 'ha') void loadHa();
   }
@@ -573,6 +606,9 @@ window.slsViews = (() => {
     }
   }
   function renderHa() {
+    return preserveScroll(renderHaContent);
+  }
+  function renderHaContent() {
     if (!haData) return;
     showNotice('#ha-warning', (haData.warnings || []).join(' '));
     $('#ha-note').textContent = haData.note || '';
@@ -618,6 +654,7 @@ window.slsViews = (() => {
         ['Создано', 'source'],
         ['Связь с контроллером', 'relation'],
         ['Состояние', 'value'],
+        ['Последнее изменение', 'lastChanged'],
         ['', null],
       ],
       'objects',
@@ -629,11 +666,20 @@ window.slsViews = (() => {
         name = el('td'),
         origin = el('td'),
         relation = el('td'),
+        changed = el('td', 'ha-last-changed'),
         link = el('td');
       name.append(el('strong', '', object.name), el('small', 'mono', object.id));
       origin.append(badge(object.source));
       if (object.file) origin.append(el('small', '', object.file));
       relation.append(el('span', '', object.relation));
+      changed.append(el('span', '', object.lastChanged ? ago(object.lastChanged) : '—'));
+      if (object.lastChanged)
+        changed.append(el('small', '', new Date(object.lastChanged).toLocaleString('ru-RU')));
+      else
+        changed.title =
+          object.kind === 'device'
+            ? 'Устройство HA не имеет собственного состояния'
+            : 'HA не передал время изменения состояния';
       link.append(haLink(object.url, 'Открыть ↗', 'object-open'));
       row.append(
         name,
@@ -642,6 +688,7 @@ window.slsViews = (() => {
         origin,
         relation,
         el('td', '', object.value),
+        changed,
         link,
       );
       body.append(row);
@@ -671,10 +718,7 @@ window.slsViews = (() => {
     }
   }
   function tabChanged() {
-    $('#mqtt-workspace-panel').hidden = !(
-      state.tab === 'mqtt' ||
-      (state.tab === 'devices' && state.detail?.mode === 'mqtt')
-    );
+    $('#mqtt-workspace-panel').hidden = state.tab !== 'mqtt';
     if (state.detail) detail();
     if (state.tab === 'ha') void loadHa();
   }
@@ -688,7 +732,10 @@ window.slsViews = (() => {
         } catch {}
         renderOverview();
       };
-    $('#mqtt-device-filter').oninput = mqttDevices;
+    $('#mqtt-device-filter').oninput = () => {
+      deviceId = null;
+      mqttDevices();
+    };
     $('#mqtt-device-select').onchange = (event) => {
       deviceId = event.target.value;
       mqttDevices();

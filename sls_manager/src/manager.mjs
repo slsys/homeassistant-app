@@ -10,6 +10,7 @@ import {
 } from './gateway.mjs';
 import { MqttMonitor, EventMonitor } from './monitor.mjs';
 import { publishReboot } from './mqtt-command.mjs';
+import { RebootTracker } from './reboot.mjs';
 
 export class Manager {
   constructor(store, discovery, { pollInterval = 60, mqttDiscovery = null, homeAssistant = null } = {}) {
@@ -19,6 +20,7 @@ export class Manager {
     this.homeAssistant = homeAssistant;
     this.pollInterval = pollInterval;
     this.runtimes = new Map();
+    this.reboots = new RebootTracker();
     this.mutations = Promise.resolve();
     this.stopped = false;
   }
@@ -83,6 +85,43 @@ export class Manager {
       );
     return { local, remote };
   }
+  rebootSamples(entry) {
+    const rt = this.runtimes.get(entry.id);
+    const { local, remote } = this.observation(entry);
+    return [
+      { source: 'HTTP', uptime: rt?.uptime, at: rt?.uptimeAt },
+      { source: 'LocalLink', uptime: local?.uptime, at: local?.lastSeen },
+      { source: 'MQTT HA', uptime: remote?.liveUptime, at: remote?.liveUptimeAt },
+      { source: 'MQTT', uptime: rt?.monitor.status.liveUptime, at: rt?.monitor.status.liveUptimeAt },
+    ].filter((s) => Number.isFinite(s.uptime) && s.uptime >= 0 && Number.isFinite(s.at) && s.at > 0);
+  }
+  rebootStatus(entry) {
+    return this.reboots.observe(entry.id, this.rebootSamples(entry));
+  }
+  async checkReboots() {
+    if (this.checkingReboots || this.stopped) return;
+    this.checkingReboots = true;
+    try {
+      for (const entry of [...this.store.entries]) {
+        const status = this.rebootStatus(entry);
+        if (this.stopped) break;
+        if (!status?.pending || entry.mode === 'mqtt') continue;
+        const rt = this.runtime(entry);
+        if (
+          rt.pending ||
+          rt.detailsPending ||
+          Date.now() - (rt.rebootPollAt || 0) < (status.delayed ? 60000 : 5000)
+        )
+          continue;
+        rt.rebootPollAt = Date.now();
+        // Reuse the regular request guard; never send another reboot command.
+        await this.refresh(entry);
+        this.rebootStatus(entry);
+      }
+    } finally {
+      this.checkingReboots = false;
+    }
+  }
   rebootTransports(entry) {
     const rt = this.runtimes.get(entry.id);
     const { remote } = this.observation(entry);
@@ -97,24 +136,33 @@ export class Manager {
   }
   async reboot(id, transport = 'auto') {
     const entry = this.entry(id);
+    if (this.rebootStatus(entry)?.pending)
+      throw new GatewayError('Ожидаем подтверждения предыдущей перезагрузки', 'validation');
     if (!['auto', 'http', 'mqtt'].includes(transport))
       throw new GatewayError('Неизвестный способ перезагрузки', 'validation');
     const rt = this.runtimes.get(id);
     if (transport === 'auto')
       transport = this.rebootTransports(entry)[0] || (entry.mode === 'mqtt' ? 'mqtt' : 'http');
-    if (transport === 'http') {
-      await requestGateway(this.httpEntry(id), '/api/reboot', { form: {} });
-    } else {
-      if (!this.rebootTransports(entry).includes('mqtt'))
-        throw new GatewayError('Контроллер недоступен через MQTT', 'validation');
-      const { remote } = this.observation(entry);
-      const viaHa = remote?.online && this.mqttDiscovery?.client?.connected;
-      await publishReboot(
-        viaHa ? this.mqttDiscovery.client : rt?.monitor.client,
-        viaHa ? remote.mqttPrefix : rt?.mqtt?.prefix,
-      );
+    if (transport === 'http') this.httpEntry(id);
+    else if (!this.rebootTransports(entry).includes('mqtt'))
+      throw new GatewayError('Контроллер недоступен через MQTT', 'validation');
+    const record = this.reboots.begin(id, transport, this.rebootSamples(entry));
+    if (!record) throw new GatewayError('Перезагрузка уже выполняется', 'validation');
+    try {
+      if (transport === 'http') await requestGateway(entry, '/api/reboot', { form: {} });
+      else {
+        const { remote } = this.observation(entry);
+        const viaHa = remote?.online && this.mqttDiscovery?.client?.connected;
+        await publishReboot(
+          viaHa ? this.mqttDiscovery.client : rt?.monitor.client,
+          viaHa ? remote.mqttPrefix : rt?.mqtt?.prefix,
+        );
+      }
+    } catch (error) {
+      this.reboots.remove(id);
+      throw error;
     }
-    return { success: true, transport };
+    return { success: true, transport, reboot: this.rebootStatus(entry) };
   }
   trackMqtt(prefix) {
     return this.mutate(async () => {
@@ -168,6 +216,7 @@ export class Manager {
   }
   publicEntry(entry) {
     const result = this.rawEntry(entry);
+    result.reboot = this.rebootStatus(entry);
     result.ha = this.homeAssistant?.metadata(result.mqtt?.prefix) || null;
     result.mqttCatalogLimited = Boolean(
       this.mqttDiscovery?.catalog.limited || this.runtimes.get(entry.id)?.monitor.catalog.limited,
@@ -253,7 +302,7 @@ export class Manager {
   }
   state() {
     return {
-      version: '0.1.10',
+      version: '0.1.11',
       sidebarInstallation: this.sidebarInstallation || null,
       discovery: {
         ...this.discovery.status,
@@ -321,6 +370,7 @@ export class Manager {
     if (rt.pending) return rt.pending;
     rt.pending = (async () => {
       try {
+        let uptimeAt = Date.now();
         const info = await requestGateway(entry, '/api/info');
         if (this.stopped || !this.store.entries.includes(entry)) return;
         if (!info || typeof info.version !== 'string' || typeof info.board !== 'string')
@@ -333,6 +383,7 @@ export class Manager {
         let uptime = info.uptime;
         if (!Number.isFinite(uptime) || uptime < 0) {
           try {
+            uptimeAt = Date.now();
             uptime = (await requestGateway(entry, '/api/time')).uptime;
           } catch {
             uptime = null;
@@ -340,7 +391,7 @@ export class Manager {
         }
         if (this.stopped || !this.store.entries.includes(entry)) return;
         rt.uptime = Number.isFinite(uptime) && uptime >= 0 ? uptime : null;
-        rt.uptimeAt = rt.uptime === null ? null : Date.now();
+        rt.uptimeAt = rt.uptime === null ? null : uptimeAt;
         if (forceConfig || !rt.configAt || Date.now() - rt.configAt > 300000) {
           try {
             const config = await readGatewayConfig(entry);
@@ -416,7 +467,7 @@ export class Manager {
     const remote = this.mqttDiscovery?.catalog?.devices(prefix) || [];
     const devices = new Map(local.map((d) => [d.id, d]));
     for (const device of remote) devices.set(device.id, device);
-    const result = [...devices.values()];
+    const result = [...devices.values()].sort((a, b) => Number(b.controller) - Number(a.controller));
     return this.homeAssistant ? this.homeAssistant.enrichDevices(result) : result;
   }
   async haObjects(id) {
@@ -491,6 +542,7 @@ export class Manager {
     rt?.monitor.stop();
     rt?.events.close();
     this.runtimes.delete(id);
+    this.reboots.remove(id);
   }
   start() {
     this.stopped = false;
@@ -510,11 +562,13 @@ export class Manager {
     void tick();
     this.timer = setInterval(tick, this.pollInterval * 1000);
     this.timer.unref();
+    this.rebootTimer = setInterval(() => void this.checkReboots(), 5000).unref();
   }
   close() {
     this.stopped = true;
     this.homeAssistant?.close();
     clearInterval(this.timer);
+    clearInterval(this.rebootTimer);
     for (const rt of this.runtimes.values()) {
       rt.monitor.stop();
       rt.events.close();

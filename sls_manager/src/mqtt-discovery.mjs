@@ -134,7 +134,11 @@ export class MqttDiscovery {
         lastDataAt: retain ? device.lastDataAt : now,
         observedAt: now,
       });
-      if (!retain) this.states.set(prefix, 'online');
+      if (!retain) {
+        device.liveUptime = data.Uptime;
+        device.liveUptimeAt = now;
+        this.states.set(prefix, 'online');
+      }
       return;
     }
     if (!topic.endsWith('/config') || !payload.length) return;
