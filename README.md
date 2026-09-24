@@ -30,8 +30,8 @@ Home Assistant. Поддерживаемые архитектуры: ARM64 (`aar
 
 1. В Home Assistant откройте **Настройки → Приложения → Установить приложение
    → ⋮ → Репозитории**.
-2. Добавьте адрес [репозитория SLS](https://github.com/slsys/sls-ha-app):
-   `https://github.com/slsys/sls-ha-app`.
+2. Добавьте адрес [репозитория SLS](https://github.com/slsys/homeassistant-app):
+   `https://github.com/slsys/homeassistant-app`.
 3. Выберите **SLS → Установить**.
 4. Включите запуск при загрузке и отображение в боковой панели, запустите
    приложение и нажмите **Открыть веб-интерфейс**.
