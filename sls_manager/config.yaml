@@ -35,4 +35,4 @@ schema:
   interfaces:
     - str
   poll_interval: int(30,600)
-url: https://github.com/slsys/sls-ha-app
+url: https://github.com/slsys/homeassistant-app
