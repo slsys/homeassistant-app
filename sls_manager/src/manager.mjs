@@ -159,7 +159,7 @@ export class Manager {
         );
       }
     } catch (error) {
-      this.reboots.remove(id);
+      if (error.code !== 'mqtt_uncertain') this.reboots.remove(id);
       throw error;
     }
     return { success: true, transport, reboot: this.rebootStatus(entry) };
@@ -242,7 +242,8 @@ export class Manager {
         rebootTransports,
         lastDataAt: Math.max(local?.lastSeen || 0, live?.lastDataAt || observed?.lastDataAt || 0) || null,
         observed,
-        connected: Boolean(live?.online),
+        connected: live?.availability === 'unknown' || !live ? null : Boolean(live.online),
+        availability: live?.availability || 'unknown',
         lastSuccess: live?.lastSeen || null,
         uptime: observed?.uptime ?? null,
         info: {
@@ -256,12 +257,7 @@ export class Manager {
           discovery: this.mqttDiscovery?.catalog.entries(entry.mqttPrefix).length ? true : null,
         },
         monitoring: true,
-        monitor: {
-          connected: Boolean(this.mqttDiscovery?.status.connected),
-          bridgeState: live?.online ? 'online' : 'offline',
-          lastMessage: live?.lastSeen,
-          discoveryCount: this.mqttDiscovery?.catalog.entries(entry.mqttPrefix).length || 0,
-        },
+        monitor: this.mqttDiscovery?.monitor(entry.mqttPrefix) || { connected: false },
         devices: [],
         error: null,
       };
@@ -296,13 +292,28 @@ export class Manager {
       uptime: uptime ?? null,
       mqtt: rt.mqtt,
       monitoring: entry.monitoringMode !== 'off',
-      monitor: { ...rt.monitor.status },
+      monitor: this.monitorStatus(entry),
       deviceCount: rt.coordinator?.device_count ?? null,
     };
   }
+  monitorStatus(entry) {
+    if (this.mqttDiscovery?.mode !== 'homeassistant') {
+      const status = this.runtime(entry).monitor.status;
+      const fresh = Date.now() - (status.liveUptimeAt || 0) < 180000;
+      const availability = !status.connected ? 'unknown'
+        : status.bridgeState === 'offline' ? 'offline'
+          : fresh ? 'online' : 'unknown';
+      return { ...status, mode: 'direct', availability };
+    }
+    const prefix = entry.mqttPrefix || this.runtimes.get(entry.id)?.mqtt?.prefix;
+    const status = this.mqttDiscovery.monitor(prefix);
+    if (entry.monitoringMode === 'off')
+      return { ...status, connected: false, ready: false, error: null, message: 'Диагностика выключена' };
+    return status;
+  }
   state() {
     return {
-      version: '0.1.11',
+      version: '0.1.12',
       sidebarInstallation: this.sidebarInstallation || null,
       discovery: {
         ...this.discovery.status,
@@ -399,7 +410,10 @@ export class Manager {
             rt.mqtt = publicMqtt(config);
             rt.configAt = Date.now();
             rt.configError = null;
-            if (entry.monitoringMode !== 'off' && !rt.monitor.client) rt.monitor.start(config);
+            this.mqttDiscovery?.watchPrefix(rt.mqtt.prefix);
+            this.mqttDiscovery?.watchDiscoveryPrefix(rt.mqtt.discoveryPrefix);
+            if (this.mqttDiscovery?.mode !== 'homeassistant' && entry.monitoringMode !== 'off' && !rt.monitor.client)
+              rt.monitor.start(config);
           } catch (error) {
             rt.configError = error.message;
           }
@@ -501,12 +515,17 @@ export class Manager {
       throw new GatewayError('Некорректный параметр мониторинга', 'validation');
     const entry = this.httpEntry(id);
     const rt = this.runtime(entry);
-    if (enabled) rt.monitor.start(await readGatewayConfig(entry));
-    else rt.monitor.stop();
+    if (enabled) {
+      const config = await readGatewayConfig(entry);
+      rt.mqtt = publicMqtt(config);
+      this.mqttDiscovery?.watchPrefix(rt.mqtt.prefix);
+      this.mqttDiscovery?.watchDiscoveryPrefix(rt.mqtt.discoveryPrefix);
+      if (this.mqttDiscovery?.mode !== 'homeassistant') rt.monitor.start(config);
+    } else rt.monitor.stop();
     entry.monitoring = enabled;
     entry.monitoringMode = enabled ? 'on' : 'off';
     await this.store.save();
-    return { ...rt.monitor.status };
+    return this.monitorStatus(entry);
   }
   events(id) {
     const entry = this.httpEntry(id);

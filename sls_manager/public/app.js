@@ -49,10 +49,12 @@ function badge(text, mode = '') {
   return el('span', `badge ${mode}`, text);
 }
 function connectionDot(connected) {
-  const dot = el('span', 'status-dot' + (connected ? '' : ' off'));
+  const unknown = connected === null;
+  const dot = el('span', 'status-dot' + (unknown ? ' unknown' : connected ? '' : ' off'));
+  const label = unknown ? 'Доступность неизвестна: нет свежих данных MQTT' : connected ? 'На связи' : 'Нет связи';
   dot.setAttribute('role', 'img');
-  dot.setAttribute('aria-label', connected ? 'На связи' : 'Нет связи');
-  dot.title = connected ? 'На связи' : 'Нет связи';
+  dot.setAttribute('aria-label', label);
+  dot.title = label;
   return dot;
 }
 function showNotice(selector, message) {
@@ -277,9 +279,7 @@ function renderOverviewContent() {
   $('#page-title').textContent = state.selected
     ? gateways.find((g) => g.id === state.selected)?.name || 'Контроллер'
     : 'Контроллеры';
-  $('#mqtt-discovery-status').textContent = discovery.mqtt?.connected
-    ? 'MQTT HA подключён'
-    : discovery.mqtt?.error || 'MQTT HA: подключение…';
+  $('#mqtt-discovery-status').textContent = discovery.mqtt?.message || 'MQTT: подключение…';
   $('#saved-count').textContent = gateways.length;
   $('#found-stat').textContent = discovery.devices.filter((d) => d.online).length;
   $('#connected-stat').replaceChildren(
@@ -287,17 +287,18 @@ function renderOverviewContent() {
     el('em', '', `/ ${gateways.length}`),
   );
   const mqttGateways = gateways.filter((g) => g.mqtt?.enabled);
+  const mqttState = (g) => g.monitor.availability ?? g.monitor.bridgeState;
   const mqttKnown = mqttGateways.filter(
-    (g) => g.monitor.connected && ['online', 'offline'].includes(g.monitor.bridgeState),
+    (g) => g.monitor.connected && ['online', 'offline'].includes(mqttState(g)),
   );
   const mqttOnline = new Set([
-    ...mqttKnown.filter((g) => g.monitor.bridgeState === 'online').map((g) => g.mqtt.prefix),
+    ...mqttKnown.filter((g) => mqttState(g) === 'online').map((g) => g.mqtt.prefix),
     ...discovery.devices.filter((d) => d.mqttPrefix && d.mqttOnline).map((d) => d.mqttPrefix),
   ]).size;
   $('#mqtt-stat').textContent = mqttOnline;
   $('#mqtt-stat-caption').textContent = mqttGateways.length
-    ? 'По bridge/state · не проверено: ' + (mqttGateways.length - mqttKnown.length)
-    : 'Найдены через брокер HA';
+    ? 'Состояние MQTT · не проверено: ' + (mqttGateways.length - mqttKnown.length)
+    : 'Найдены через MQTT';
   $('#saved-caption').textContent = gateways.length
     ? `Всего: ${gateways.length}`
     : 'Нет подключённых контроллеров';
@@ -624,7 +625,7 @@ function renderChecks() {
       g.mqtt?.enabled ? 'success' : 'warning',
       'MQTT на SLS',
       g.mode === 'mqtt'
-        ? 'Брокер HA'
+        ? monitor.mode === 'homeassistant' ? 'MQTT-интеграция HA' : 'Выбранный MQTT-брокер'
         : g.mqtt?.server
           ? `${g.mqtt.server}:${g.mqtt.port}`
           : 'Брокер не указан',
@@ -634,13 +635,15 @@ function renderChecks() {
       g.mqtt?.discovery ? 'success' : 'warning',
       'Автодобавление в HA',
       g.mode === 'mqtt'
-        ? 'Объявления, полученные от брокера HA'
+        ? 'Объявления, полученные через MQTT'
         : `Префикс: ${g.mqtt?.discoveryPrefix || 'homeassistant'}`,
     ],
     [
-      monitor.connected ? 'Подключён' : g.monitoring ? 'Нет связи' : 'Не проверен',
+      monitor.connected
+        ? monitor.mode === 'homeassistant' ? 'Получаем данные' : 'Подключён'
+        : g.monitoring ? monitor.ready ? 'Ожидаем данные' : 'Нет связи' : 'Не проверен',
       monitor.connected ? 'success' : 'warning',
-      'Менеджер → брокер',
+      monitor.mode === 'homeassistant' ? 'MQTT через Home Assistant' : 'Прямое подключение MQTT',
       monitor.error ||
         (g.monitoring
           ? `Живое сообщение: ${ago(monitor.lastMessage)}`

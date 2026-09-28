@@ -22,7 +22,8 @@ if (!Number.isInteger(pollInterval) || pollInterval < 30 || pollInterval > 600)
 const store = new Store(directory);
 await store.load();
 const discovery = new LocalLink(options);
-const mqttDiscovery = new MqttDiscovery();
+const mqttDiscovery = new MqttDiscovery({ mode: options.mqtt_mode || 'homeassistant', options });
+for (const entry of store.entries) mqttDiscovery.watchPrefix(entry.mqttPrefix);
 const homeAssistant = new HomeAssistant();
 const manager = new Manager(store, discovery, { pollInterval, mqttDiscovery, homeAssistant });
 const server = createServer(manager, { standalone });
@@ -69,7 +70,7 @@ server.on('error', (error) => {
 });
 server.listen(port, standalone ? '127.0.0.1' : '0.0.0.0', () => {
   console.log(
-    `SLS 0.1.11 started (${standalone ? 'localhost development' : 'Home Assistant Ingress'}), port ${port}`,
+    `SLS 0.1.12 started (${standalone ? 'localhost development' : 'Home Assistant Ingress'}), port ${port}`,
   );
   discovery.start();
   void mqttDiscovery.start();

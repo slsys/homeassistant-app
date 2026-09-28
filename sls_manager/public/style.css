@@ -1788,3 +1788,5 @@ th[aria-sort='descending'] {
 .ha-last-changed {
   white-space: nowrap;
 }
+
+.status-dot.unknown { background: var(--muted, #89949c); }

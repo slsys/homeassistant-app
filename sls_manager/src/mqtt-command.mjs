@@ -8,13 +8,21 @@ export function publishReboot(client, prefix) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(
       () =>
-        reject(new GatewayError('Отправка MQTT не подтверждена. Повторите после проверки связи.', 'mqtt')),
-      5000,
+        reject(new GatewayError(
+          'Отправка MQTT не подтверждена. Ожидаем данные о перезагрузке; команда не повторяется.',
+          'mqtt_uncertain',
+        )),
+      client.viaHomeAssistant ? 10000 : 5000,
     );
     timer.unref?.();
     const done = (error) => {
       clearTimeout(timer);
-      if (error) reject(new GatewayError('Не удалось отправить команду MQTT', 'mqtt'));
+      if (error?.code === 'delivery_unknown')
+        reject(new GatewayError(
+          'HA не подтвердил отправку. Ожидаем данные о перезагрузке; команда не повторяется.',
+          'mqtt_uncertain',
+        ));
+      else if (error) reject(new GatewayError('Не удалось отправить команду MQTT', 'mqtt'));
       else resolve();
     };
     try {

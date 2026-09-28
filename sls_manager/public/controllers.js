@@ -146,7 +146,7 @@ window.slsViews = (() => {
         [g.mac, g.discoveryId, observed.mac, saved ? observed.id : g.source !== 'MQTT' ? g.id : ''].find(
           (value) => /^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(value || ''),
         ) || '',
-      online: saved ? g.connected : g.online,
+      online: saved ? g.connected : g.availability === 'unknown' ? null : g.online,
       last: saved ? g.lastDataAt : g.lastSeen,
       ha: g.ha,
     };
@@ -566,7 +566,7 @@ window.slsViews = (() => {
         : null) ||
         g.ha?.error ||
         (!g.monitor?.connected
-          ? 'Нет связи с MQTT-брокером. Показаны последние доступные объявления и состояния.'
+          ? (g.monitor?.message || 'Нет связи с MQTT-брокером.') + ' Показаны последние доступные объявления и состояния.'
           : null),
     );
     $('#detail-ha').replaceChildren(

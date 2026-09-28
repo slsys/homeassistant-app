@@ -11,3 +11,30 @@ configuration:
   poll_interval:
     name: Poll interval
     description: Gateway information polling interval, 30–600 seconds.
+  mqtt_mode:
+    name: MQTT connection
+    description: homeassistant uses the MQTT integration in HA (default). direct connects to the broker independently. There is no automatic fallback between modes.
+  mqtt_host:
+    name: Direct MQTT host
+    description: Direct mode only. External broker hostname or IP, without a scheme or path. Leave empty to use the Supervisor MQTT service.
+  mqtt_port:
+    name: MQTT port
+    description: Used with a direct host. Usually 1883, or 8883 for TLS.
+  mqtt_username:
+    name: MQTT username
+    description: Used only with a direct host.
+  mqtt_password:
+    name: MQTT password
+    description: Used only with a direct host. Not exposed in the SLS interface.
+  mqtt_tls:
+    name: MQTT TLS
+    description: Used with a direct host. The broker certificate and hostname are verified.
+  mqtt_protocol:
+    name: MQTT protocol
+    description: Used with a direct host — 3.1.1 or 5.
+  mqtt_discovery_prefix:
+    name: HA Discovery prefix
+    description: Usually homeassistant. Match the prefix published by controllers.
+  mqtt_scan_interval:
+    name: Extended MQTT discovery interval
+    description: Seconds (120–3600). Listen to all topics for 75 seconds at startup and at this interval to find unknown nested prefixes. Use narrow subscriptions between scans.

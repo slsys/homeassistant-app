@@ -1,5 +1,5 @@
 name: SLS
-version: 0.1.11
+version: 0.1.12
 slug: sls_manager
 stage: experimental
 description: Discover SLS controllers with LocalLink and manage their Home Assistant connection.
@@ -29,10 +29,28 @@ options:
   multicast_port: 8881
   interfaces: []
   poll_interval: 60
+  mqtt_mode: homeassistant
+  mqtt_host: ""
+  mqtt_port: 1883
+  mqtt_username: ""
+  mqtt_password: ""
+  mqtt_tls: false
+  mqtt_protocol: "3.1.1"
+  mqtt_discovery_prefix: homeassistant
+  mqtt_scan_interval: 300
 schema:
   multicast_address: str
   multicast_port: port
   interfaces:
     - str
   poll_interval: int(30,600)
+  mqtt_mode: list(homeassistant|direct)
+  mqtt_host: str?
+  mqtt_port: port
+  mqtt_username: str?
+  mqtt_password: password?
+  mqtt_tls: bool
+  mqtt_protocol: list(3.1.1|5)
+  mqtt_discovery_prefix: str
+  mqtt_scan_interval: int(120,3600)
 url: https://github.com/slsys/homeassistant-app

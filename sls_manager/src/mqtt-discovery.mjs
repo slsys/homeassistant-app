@@ -1,7 +1,8 @@
 import mqtt from 'mqtt';
+import { HomeAssistantMqttClient } from './mqtt-homeassistant.mjs';
 import { DiscoveryCatalog } from './discovery-catalog.mjs';
 import { randomUUID } from 'node:crypto';
-import { isIPv4 } from 'node:net';
+import { isIPv4, isIPv6 } from 'node:net';
 
 const MAX_DEVICES = 512;
 const text = (value, max = 150) =>
@@ -22,10 +23,10 @@ export async function supervisorMqtt() {
   const config = result.data;
   if (result.result !== 'ok' || !config?.host) throw new Error('Брокер MQTT не предоставлен Home Assistant');
   const version = config.protocol || '3.1.1';
-  if (!['3.1', '3.1.1'].includes(version)) throw new Error('Неподдерживаемая версия протокола брокера MQTT');
+  if (!['3.1', '3.1.1', '5'].includes(version)) throw new Error('Неподдерживаемая версия протокола брокера MQTT');
   return {
     protocol: config.ssl ? 'mqtts' : 'mqtt',
-    protocolVersion: version === '3.1' ? 3 : 4,
+    protocolVersion: version === '5' ? 5 : version === '3.1' ? 3 : 4,
     ...(version === '3.1' ? { protocolId: 'MQIsdp' } : {}),
     host: config.host,
     port: Number(config.port) || (config.ssl ? 8883 : 1883),
@@ -34,15 +35,157 @@ export async function supervisorMqtt() {
   };
 }
 
+export async function directMqtt(options = {}) {
+  const host = options.mqtt_host?.trim();
+  if (!host) return supervisorMqtt();
+  if (host.length > 255 || (host.includes(':') ? !isIPv6(host) : !/^[a-zA-Z0-9._-]+$/.test(host)))
+    throw new Error('Укажите MQTT-хост без протокола и пути');
+  const port = options.mqtt_port ?? 1883;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid mqtt_port');
+  const version = options.mqtt_protocol || '3.1.1';
+  if (!['3.1.1', '5'].includes(version)) throw new Error('Invalid mqtt_protocol');
+  return {
+    host,
+    port,
+    protocol: options.mqtt_tls ? 'mqtts' : 'mqtt',
+    protocolVersion: version === '5' ? 5 : 4,
+    username: options.mqtt_username || undefined,
+    password: options.mqtt_password || undefined,
+    rejectUnauthorized: true,
+  };
+}
+
 export class MqttDiscovery {
-  constructor({ getConfig = supervisorMqtt, connect = mqtt.connect } = {}) {
-    this.getConfig = getConfig;
-    this.connect = connect;
+  constructor({ mode = 'homeassistant', options = {}, getConfig, connect } = {}) {
+    if (!['homeassistant', 'direct'].includes(mode)) throw new Error('Invalid mqtt_mode');
+    this.mode = mode;
+    this.getConfig = getConfig || (mode === 'direct' ? () => directMqtt(options) : async () => ({}));
+    this.connect = connect || (mode === 'direct' ? mqtt.connect : () => new HomeAssistantMqttClient());
+    const discoveryPrefix = options.mqtt_discovery_prefix || 'homeassistant';
+    if (!validPrefix(discoveryPrefix)) throw new Error('Invalid mqtt_discovery_prefix');
+    this.discoveryPrefixes = new Set([discoveryPrefix]);
+    this.scanInterval = options.mqtt_scan_interval ?? 300;
+    if (!Number.isInteger(this.scanInterval) || this.scanInterval < 120 || this.scanInterval > 3600)
+      throw new Error('mqtt_scan_interval must be 120–3600 seconds');
+    this.prefixes = new Set();
     this.devices = new Map();
     this.catalog = new DiscoveryCatalog();
     this.states = new Map();
-    this.status = { connected: false, error: null };
+    this.connection = { ready: false, error: null };
+    this.lastPacketAt = null;
+    this.liveTopics = new Map();
     this.stopped = true;
+  }
+  get status() {
+    const ready = Boolean(this.client?.connected && this.connection.ready);
+    const connected = ready && (this.mode === 'direct' || (this.lastPacketAt !== null && Date.now() - this.lastPacketAt < 180000));
+    const label = this.mode === 'homeassistant' ? 'MQTT через HA' : 'MQTT напрямую';
+    return {
+      mode: this.mode,
+      ready,
+      connected,
+      haConnected: this.mode === 'homeassistant' ? Boolean(this.client?.connected) : null,
+      lastMessageAt: this.lastPacketAt,
+      scanning: Boolean(this.scanning),
+      error: this.connection.error,
+      message: this.connection.error || (connected
+        ? label + (this.mode === 'homeassistant' ? ': получаем данные' : ': подключён')
+        : ready ? label + ': ожидаем сообщения от брокера' : label + ': подключение…'),
+    };
+  }
+  watchPrefix(prefix) {
+    if (!validPrefix(prefix) || this.prefixes.has(prefix) || this.prefixes.size >= MAX_DEVICES) return;
+    this.prefixes.add(prefix);
+    this.scheduleTopics();
+  }
+  watchDiscoveryPrefix(prefix) {
+    if (!validPrefix(prefix) || this.discoveryPrefixes.has(prefix) || this.discoveryPrefixes.size >= 64) return;
+    this.discoveryPrefixes.add(prefix);
+    this.scheduleTopics();
+  }
+  desiredTopics() {
+    return new Set([
+      ...(this.scanning ? ['#'] : []),
+      ...[...this.discoveryPrefixes].map((prefix) => prefix + '/#'),
+      '+/bridge/config', '+/bridge/state',
+      ...[...this.prefixes].map((prefix) => prefix + '/#'),
+    ]);
+  }
+  scheduleTopics() {
+    if (!this.client?.connected || this.stopped) return;
+    this.topicsDirty = true;
+    if (!this.syncingTopics) void this.syncTopics();
+  }
+  async syncTopics() {
+    const client = this.client;
+    if (!client?.connected || this.syncingTopics) return;
+    const active = this.activeTopics;
+    const current = () =>
+      this.client === client && this.activeTopics === active && !this.stopped && client.connected;
+    const reportFailure = (error) => {
+      this.connection.error = this.mode === 'homeassistant'
+        ? error.message
+        : 'Брокер не подтвердил MQTT-подписку: проверьте доступ и ACL';
+      clearTimeout(this.topicRetry);
+      this.topicRetry = setTimeout(() => this.scheduleTopics(), 15000).unref();
+    };
+    this.syncingTopics = true;
+    try {
+      do {
+        this.topicsDirty = false;
+        const desired = this.desiredTopics();
+        const added = [...desired].filter((topic) => !active.has(topic));
+        const removed = [...active].filter((topic) => !desired.has(topic));
+        let subscriptionError = null;
+        // A broker may deny the broad scan while allowing specific controller
+        // topics. Keep those subscriptions working and retry only the missing ones.
+        for (const topic of added) {
+          try {
+            await new Promise((resolve, reject) => client.subscribe([topic], { qos: 0 }, (error, granted) => {
+              if (error || !granted?.length || granted.some((item) => item.qos === 128))
+                reject(error || new Error('MQTT-подписка запрещена правами брокера'));
+              else resolve();
+            }));
+            if (!current()) return;
+            active.add(topic);
+          } catch (error) {
+            if (!current()) return;
+            subscriptionError ||= error;
+          }
+        }
+        if (!current()) return;
+        if (removed.length) {
+          await new Promise((resolve, reject) => client.unsubscribe(removed, (error) => error ? reject(error) : resolve()));
+          if (!current()) return;
+          for (const topic of removed) active.delete(topic);
+        }
+        this.connection.ready = active.size > 0;
+        if (subscriptionError) reportFailure(subscriptionError);
+        else {
+          this.connection.error = null;
+          clearTimeout(this.topicRetry);
+        }
+      } while (this.topicsDirty && current());
+    } catch (error) {
+      if (current()) {
+        this.connection.ready = active.size > 0;
+        reportFailure(error);
+      }
+    } finally {
+      this.syncingTopics = false;
+      if (this.client?.connected && this.topicsDirty && !this.stopped) this.scheduleTopics();
+    }
+  }
+  beginScan() {
+    this.scanning = true;
+    clearTimeout(this.scanEnd);
+    this.scheduleTopics();
+    // A heartbeat is sent about once a minute. Nested, previously unknown prefixes
+    // are found during this window, then followed with a dedicated subscription.
+    this.scanEnd = setTimeout(() => {
+      this.scanning = false;
+      this.scheduleTopics();
+    }, 75000).unref();
   }
   async start() {
     this.stopped = false;
@@ -64,36 +207,60 @@ export class MqttDiscovery {
         });
       on('connect', () => {
         this.catalog.clear();
-        this.status = { connected: true, error: null };
-        // Unknown prefixes can have several levels. ingest retains only SLS
-        // heartbeats, availability and HA Discovery metadata; never publishes.
-        client.subscribe('#', { qos: 0 }, (error, granted) => {
-          if (this.client !== client) return;
-          if (error || !granted?.length || granted.some((g) => g.qos === 128))
-            this.status = { connected: false, error: 'Брокер не разрешил MQTT-поиск (ACL)' };
-        });
+        this.liveTopics.clear();
+        this.states.clear();
+        this.lastPacketAt = null;
+        this.connection = { ready: false, error: null };
+        this.activeTopics = new Set();
+        clearTimeout(this.topicRetry);
+        clearInterval(this.scanTimer);
+        this.beginScan();
+        this.scanTimer = setInterval(() => this.beginScan(), this.scanInterval * 1000).unref();
       });
       const disconnected = () => {
-        this.status.connected = false;
+        this.connection.ready = false;
+        this.connection.error ||= this.mode === 'homeassistant'
+          ? 'Нет данных через HA: восстанавливаем MQTT-подписки'
+          : 'Нет связи с MQTT-брокером';
+        this.lastPacketAt = null;
         this.states.clear();
+        clearTimeout(this.scanEnd);
+        clearTimeout(this.topicRetry);
+        clearInterval(this.scanTimer);
+        this.scanning = false;
         for (const device of this.devices.values()) device.lastSeen = null;
       };
       on('offline', disconnected);
       on('close', disconnected);
-      on('error', () => {
-        this.status.error = 'Нет подключения к MQTT-брокеру HA: проверьте сервис и ACL';
+      on('error', (error) => {
+        this.connection.error = this.mode === 'homeassistant'
+          ? error.message
+          : 'Нет подключения к MQTT-брокеру: проверьте адрес, TLS и ACL';
       });
       on('message', (topic, payload, packet) => this.ingest(topic, payload, packet));
     } catch (error) {
       if (this.stopped) return;
-      this.status = { connected: false, error: error.message };
-      this.retry = setTimeout(() => this.start(), 60000);
-      this.retry.unref();
+      this.connection = { ready: false, error: error.message };
+      this.retry = setTimeout(() => this.start(), 60000).unref();
     }
   }
   ingest(topic, payload, { retain = false } = {}, now = Date.now()) {
     if (payload.length > 65536 || topic.length > 500) return;
+    this.lastPacketAt = now;
+    // Resubscribing during a discovery scan must not replace a fresh observation
+    // with an older retained value, or make a command look like controller data.
+    if (retain && this.liveTopics.has(topic) && now - this.liveTopics.get(topic) < 180000) return;
+    if (!retain) {
+      this.liveTopics.delete(topic);
+      this.liveTopics.set(topic, now);
+      if (this.liveTopics.size > 8192) this.liveTopics.delete(this.liveTopics.keys().next().value);
+    }
     this.catalog.ingest(topic, payload, { retain }, now);
+    if (!retain && (this.catalog.topics.has(topic) || /\/bridge\/(config|state)$/.test(topic))) {
+      for (const device of this.devices.values()) {
+        if (topic.startsWith(device.mqttPrefix + '/')) device.lastDataAt = now;
+      }
+    }
     const bridge = topic.match(/^(.+)\/bridge\/(config|state)$/);
     if (bridge && validPrefix(bridge[1])) {
       const [, prefix, type] = bridge;
@@ -102,7 +269,9 @@ export class MqttDiscovery {
         if (!['online', 'offline'].includes(state)) return;
         if (!this.states.has(prefix) && this.states.size >= MAX_DEVICES)
           this.states.delete(this.states.keys().next().value);
-        this.states.set(prefix, state);
+        this.states.set(prefix, { value: state, retain, at: now });
+        const device = this.devices.get(prefix);
+        if (device && !retain && state === 'online') device.lastSeen = now;
         return;
       }
       let data;
@@ -137,7 +306,7 @@ export class MqttDiscovery {
       if (!retain) {
         device.liveUptime = data.Uptime;
         device.liveUptimeAt = now;
-        this.states.set(prefix, 'online');
+        this.states.set(prefix, { value: 'online', retain: false, at: now });
       }
       return;
     }
@@ -184,28 +353,47 @@ export class MqttDiscovery {
         observedAt: now,
       });
     }
+    this.watchPrefix(prefix);
     return this.devices.get(prefix);
   }
   list(now = Date.now()) {
     for (const [prefix, device] of this.devices)
       if (now - device.observedAt > 86400000) this.devices.delete(prefix);
-    return [...this.devices.values()].map((device) => ({
-      ...device,
-      source: 'MQTT',
-      mac: null,
-      online:
-        this.status.connected &&
-        this.states.get(device.mqttPrefix) !== 'offline' &&
-        device.lastSeen !== null &&
-        now - device.lastSeen < 180000,
-    }));
+    const status = this.status;
+    return [...this.devices.values()].map((device) => {
+      const state = this.states.get(device.mqttPrefix)?.value;
+      const online = status.ready && state !== 'offline' &&
+        device.lastSeen !== null && now - device.lastSeen < 180000;
+      let availability = 'unknown';
+      if (online) availability = 'online';
+      else if (status.connected && (state === 'offline' || device.lastSeen !== null)) availability = 'offline';
+      return { ...device, source: 'MQTT', mac: null, online, availability };
+    });
+  }
+  monitor(prefix) {
+    const status = this.status;
+    const device = this.list().find((item) => item.mqttPrefix === prefix);
+    const state = this.states.get(prefix);
+    return {
+      ...status,
+      bridgeState: state?.value || null,
+      bridgeStateRetained: Boolean(state?.retain),
+      lastMessage: device?.lastDataAt || null,
+      liveUptime: device?.liveUptime,
+      liveUptimeAt: device?.liveUptimeAt,
+      discoveryCount: this.catalog.entries(prefix).length,
+      availability: device?.availability || 'unknown',
+    };
   }
   close() {
     this.stopped = true;
     clearTimeout(this.retry);
+    clearTimeout(this.scanEnd);
+    clearTimeout(this.topicRetry);
+    clearInterval(this.scanTimer);
     const client = this.client;
     this.client = null;
     client?.end(true);
-    this.status.connected = false;
+    this.connection.ready = false;
   }
 }

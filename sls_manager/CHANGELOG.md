@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.12
+
+- Use the Home Assistant MQTT integration by default for discovery, monitoring and reboot commands, including external brokers.
+- Keep an explicitly selected direct mode with optional broker credentials, TLS and MQTT 3.1.1/5 settings.
+- Restore HA WebSocket subscriptions after reconnect and keep controller uptime confirmation separate from command publication.
+- Follow known controller prefixes continuously and scan unknown nested prefixes in bounded 75-second windows.
+- Distinguish missing MQTT observations from confirmed controller availability; retained messages do not refresh live timestamps.
+- Share MQTT observations in HA mode instead of opening a broker connection for each controller.
+- Keep permitted MQTT subscriptions active when a broader scan is denied, ignore malformed HA messages and validate broker hosts separately from ports.
+
 ## 0.1.11
 
 - Keep the MQTT controller first, show firmware only for the controller, remove the identifier field and compact the device header.
