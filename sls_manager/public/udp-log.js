@@ -10,6 +10,8 @@ window.slsUdp = (() => {
     file = null,
     fileText = '',
     generation = 0,
+    inspectionAttempted = false,
+    inspecting = false,
     senderBusy = false;
   let frozenLines = [];
   const $ = (selector) => document.querySelector(selector);
@@ -47,7 +49,6 @@ window.slsUdp = (() => {
   function fields() {
     const form = $('#udp-config');
     return {
-      enabled: form.elements.enabled.checked,
       source: form.elements.source.value.trim(),
       host: form.elements.host.value.trim(),
       port: Number(form.elements.port.value),
@@ -55,20 +56,35 @@ window.slsUdp = (() => {
       count: Number(form.elements.count.value),
     };
   }
+  function senderState() {
+    const command = snapshot?.sender;
+    // Fresh traffic can override an earlier stop command, e.g. after a controller reboot.
+    if (
+      snapshot?.lastReceived > (command?.at || 0) + 2000 &&
+      Date.now() - snapshot.lastReceived < 30000
+    )
+      return 'enabled';
+    if (['enabled', 'disabled'].includes(command?.state)) return command.state;
+    if (inspection?.safe) {
+      if (!inspection.calls.length) return 'disabled';
+      if (inspection.calls.length === 1 && typeof inspection.calls[0].enabled === 'boolean')
+        return inspection.calls[0].enabled ? 'enabled' : 'disabled';
+    }
+    return null;
+  }
   function renderSettings() {
     if (!snapshot) return;
     if (!app.state.udpDirty) {
       const form = $('#udp-config');
       for (const key of ['source', 'host', 'port', 'sizeMiB', 'count'])
         form.elements[key].value = snapshot.config[key];
-      form.elements.enabled.checked = snapshot.config.enabled;
     }
     $('#udp-limit').textContent =
       `Сохранено: ${fileCount(snapshot.files.length)} · ${size(snapshot.totalBytes)}. Предел: ${size(fields().sizeMiB * fields().count * 1048576)}.`;
-    $('#udp-status').textContent = !snapshot.config.enabled
-      ? 'Запись выключена'
-      : !snapshot.listening
-        ? 'Приёмник недоступен'
+    $('#udp-status').textContent = !snapshot.listening
+      ? 'Приёмник недоступен'
+      : !snapshot.config.source
+        ? 'Приёмник работает · укажите IPv4 контроллера'
         : snapshot.lastReceived
           ? 'Приёмник работает · последняя строка ' + time(snapshot.lastReceived)
           : 'Приёмник работает · ожидаем сообщения';
@@ -77,10 +93,20 @@ window.slsUdp = (() => {
       : 'Записанных сообщений в этой сессии пока нет';
     $('#udp-sender-status').textContent = snapshot.sender
       ? `${snapshot.sender.message} · ${time(snapshot.sender.at)}`
-      : 'Текущее состояние отправки не проверено';
+      : inspection?.safe
+        ? `Автозапуск в init.lua: ${inspection.calls[0]?.enabled ? 'включён' : 'выключен'}. Получение пакетов проверяется отдельно.`
+        : 'Текущее состояние отправки не проверено';
     $('#udp-http-note').hidden = snapshot.httpAvailable;
+    const state = senderState();
+    const toggle = $('#udp-sender-toggle');
+    toggle.textContent =
+      state === 'enabled'
+        ? 'Выключить отправку'
+        : state === 'disabled'
+          ? 'Включить отправку'
+          : 'Проверить отправку';
     for (const button of document.querySelectorAll('[data-sender]'))
-      button.disabled = !snapshot.httpAvailable || senderBusy;
+      button.disabled = !snapshot.httpAvailable || senderBusy || inspecting;
     showError(
       [snapshot.error, snapshot.dropped ? `Не записано пакетов: ${snapshot.dropped}` : '']
         .filter(Boolean)
@@ -193,6 +219,7 @@ window.slsUdp = (() => {
         renderFiles();
         renderLines();
       });
+      void inspectSettings();
     } catch (error) {
       if (current(id, revision)) showError(error.message);
     } finally {
@@ -214,6 +241,33 @@ window.slsUdp = (() => {
     if (!result.calls.length) container.append(node('p', 'Прямые вызовы UDP-лога не найдены.'));
     if (!result.safe) container.append(node('p', result.reason, 'notice warning'));
   }
+  async function inspectSettings() {
+    if (
+      app.state.logView !== 'settings' ||
+      !snapshot?.httpAvailable ||
+      inspectionAttempted ||
+      inspecting ||
+      senderBusy
+    )
+      return;
+    const id = selected,
+      revision = generation;
+    inspectionAttempted = true;
+    inspecting = true;
+    renderSettings();
+    try {
+      const result = await app.api(endpoint('/sender'), { action: 'inspect' });
+      if (current(id, revision)) inspectionView(result);
+    } catch (error) {
+      if (current(id, revision))
+        $('#udp-init-result').replaceChildren(node('p', error.message, 'notice warning'));
+    } finally {
+      if (current(id, revision)) {
+        inspecting = false;
+        renderSettings();
+      }
+    }
+  }
   async function sender(button, mode) {
     const id = selected,
       revision = generation;
@@ -222,7 +276,14 @@ window.slsUdp = (() => {
       if (current(id, revision)) inspectionView(result);
       return;
     }
-    const enabled = mode === 'enable',
+    if (!senderState()) {
+      const result = await app.api(endpoint('/sender'), { action: 'inspect' });
+      if (!current(id, revision)) return;
+      inspectionView(result);
+      if (!senderState())
+        throw new Error('Состояние отправки не определено. Проверьте найденные вызовы в init.lua.');
+    }
+    const enabled = senderState() !== 'enabled',
       config = fields();
     const persistent = $('#udp-persistent').checked;
     if (enabled && app.state.udpDirty)
@@ -256,6 +317,8 @@ window.slsUdp = (() => {
     if (!current(id, revision)) return;
     $('#udp-init-result').replaceChildren();
     inspection = null;
+    inspectionAttempted = false;
+    snapshot.sender = result;
     app.toast(result.message);
     await refresh();
   }
@@ -283,6 +346,8 @@ window.slsUdp = (() => {
       generation++;
       snapshot = null;
       inspection = null;
+      inspectionAttempted = false;
+      inspecting = false;
       busyLoad = null;
       paused = false;
       cleared = 0;
@@ -317,7 +382,7 @@ window.slsUdp = (() => {
       </section>
       <section id="log-settings-panel" class="panel" role="tabpanel" aria-labelledby="log-settings-tab" hidden>
         <form id="udp-config">
-          <div class="section-title"><h2>Фоновая запись UDP</h2><label class="udp-check"><input type="checkbox" name="enabled">Включена</label></div>
+          <div class="section-title"><h2>Фоновая запись UDP</h2></div>
           <p id="udp-status" role="status"></p><p id="udp-write-status" class="small muted"></p>
           <div class="form-grid"><label>IPv4 контроллера<input name="source" required maxlength="15" autocomplete="off"></label><label>UDP-порт приёма<input name="port" type="number" min="1" max="65535" value="5514" required></label></div>
           <h3>Файлы лога</h3><div class="form-grid"><label>Размер файла, МиБ<input name="sizeMiB" type="number" min="1" max="1024" value="10" required></label><label>Количество файлов<input name="count" type="number" min="1" max="1000" value="20" required></label></div>
@@ -325,9 +390,9 @@ window.slsUdp = (() => {
           <h3>Отправка с контроллера</h3><label>IPv4 получателя (HA)<input name="host" maxlength="15" autocomplete="off"></label>
           <p id="udp-sender-status" class="small muted"></p><p id="udp-http-note" class="notice" hidden>Для настройки отправки подключите HTTP-доступ к контроллеру. Уже настроенный UDP-лог принимается без HTTP.</p>
           <label class="udp-check"><input type="checkbox" id="udp-persistent" checked>Также изменить автозапуск в init.lua</label>
-          <div class="udp-actions"><button type="button" data-sender="inspect">Проверить init.lua</button><button type="button" data-sender="enable">Настроить и включить</button><button type="button" data-sender="disable">Выключить отправку</button></div>
+          <div class="udp-actions"><button type="button" data-sender="inspect">Проверить init.lua</button><button type="button" id="udp-sender-toggle" data-sender="toggle">Проверить отправку</button></div>
           <div id="udp-init-result"></div>
-          <p class="small muted">Запись работает при закрытой странице. При удалении контроллера удаляется весь его архив.</p>
+          <p class="small muted">Приёмник работает постоянно, в том числе при закрытой странице. Запись начинается при поступлении пакетов. При удалении контроллера удаляется весь его архив.</p>
           <div class="form-footer"><span id="udp-save-status" class="small muted"></span><button type="submit" class="primary">Сохранить настройки записи</button></div>
         </form>
       </section>`;
@@ -349,7 +414,8 @@ window.slsUdp = (() => {
             renderSettings();
           }
         });
-    $('#udp-config').oninput = () => {
+    $('#udp-config').oninput = (event) => {
+      if (event.target.id === 'udp-persistent') return;
       app.state.udpDirty = true;
       $('#udp-save-status').textContent = 'Есть несохранённые изменения';
       renderSettings();

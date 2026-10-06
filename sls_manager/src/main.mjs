@@ -70,7 +70,7 @@ server.on('error', (error) => {
 });
 server.listen(port, standalone ? '127.0.0.1' : '0.0.0.0', () => {
   console.log(
-    `SLS 0.1.13 started (${standalone ? 'localhost development' : 'Home Assistant Ingress'}), port ${port}`,
+    `SLS 0.1.14 started (${standalone ? 'localhost development' : 'Home Assistant Ingress'}), port ${port}`,
   );
   discovery.start();
   void mqttDiscovery.start();

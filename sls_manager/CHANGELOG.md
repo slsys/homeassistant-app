@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.14
+
+- Start UDP log reception automatically for every tracked controller, including previously disabled receivers.
+- Replace separate sender enable and disable buttons with one button based on command status, incoming packets and init.lua settings.
+- Name new log files after the controller and recording time instead of a UUID, with Unicode download support and access to existing archives.
+
 ## 0.1.13
 
 - Add a My Home Assistant button to simplify adding the SLS repository.

@@ -196,6 +196,7 @@ export class Manager {
         this.store.entries = this.store.entries.filter((e) => e !== entry);
         throw error;
       }
+      await this.udpLog.track(this.udpEntry(entry));
       return this.publicEntry(entry);
     });
   }
@@ -317,7 +318,7 @@ export class Manager {
   }
   state() {
     return {
-      version: '0.1.13',
+      version: '0.1.14',
       sidebarInstallation: this.sidebarInstallation || null,
       discovery: {
         ...this.discovery.status,
@@ -377,6 +378,7 @@ export class Manager {
       rt?.events.close();
       this.runtimes.delete(id);
     }
+    await this.udpLog.track(this.udpEntry(entry));
     await this.refresh(entry, true);
     return this.publicEntry(entry);
   }
@@ -549,12 +551,28 @@ export class Manager {
     await monitor.open();
     return monitor.snapshot();
   }
+  udpEntry(entry) {
+    const { local, remote } = this.observation(entry);
+    const source = entry.udpLog?.source || [
+      entry.address ? new URL(entry.address).hostname : null,
+      local?.address, remote?.address, entry.mqttSnapshot?.address,
+    ].find(unicastIPv4) || '';
+    return {
+      ...entry,
+      name: entry.mode === 'mqtt' ? remote?.name || entry.name : entry.name,
+      udpLog: { ...UDP_DEFAULTS, ...entry.udpLog, source },
+    };
+  }
+  async syncUdpReceivers() {
+    for (const entry of this.store.entries) {
+      if (this.stopped) break;
+      await this.udpLog.track(this.udpEntry(entry));
+    }
+  }
   async udpStatus(id) {
+    await this.udpReady;
     const entry = this.entry(id);
     const result = await this.udpLog.snapshot(id);
-    let source = entry.address ? new URL(entry.address).hostname : this.observation(entry).remote?.address;
-    if (!unicastIPv4(source)) source = '';
-    result.config = { ...UDP_DEFAULTS, source, ...entry.udpLog };
     result.sender = this.udpSender.status.get(id) || null;
     result.httpAvailable = entry.mode !== 'mqtt';
     return result;
@@ -568,7 +586,7 @@ export class Manager {
       entry.udpLog = config;
       try { await this.store.save(); }
       catch (error) { entry.udpLog = previous; throw error; }
-      await this.udpLog.configure(id, config);
+      await this.udpLog.configure(id, config, this.udpEntry(entry).name);
       return this.udpStatus(id);
     });
   }
@@ -605,8 +623,16 @@ export class Manager {
   }
   start() {
     this.stopped = false;
-    this.udpReady = this.mutate(() => this.udpLog.start(this.store.entries));
+    this.udpReady = this.mutate(() => this.udpLog.start(this.store.entries.map(entry => this.udpEntry(entry))));
     void this.udpReady.catch(error => console.error('UDP log startup:', error.code || error.message));
+    // MQTT may provide an address after startup. Refresh receivers without opening the UI.
+    this.udpTimer = setInterval(() => {
+      if (this.syncingUdp) return;
+      this.syncingUdp = true;
+      void this.mutate(() => this.syncUdpReceivers())
+        .catch(error => console.error('UDP log configuration:', error.code || error.message))
+        .finally(() => { this.syncingUdp = false; });
+    }, 5000).unref();
     let busy = false;
     const tick = async () => {
       if (busy) return;
@@ -630,6 +656,7 @@ export class Manager {
     this.homeAssistant?.close();
     clearInterval(this.timer);
     clearInterval(this.rebootTimer);
+    clearInterval(this.udpTimer);
     for (const rt of this.runtimes.values()) {
       rt.monitor.stop();
       rt.events.close();

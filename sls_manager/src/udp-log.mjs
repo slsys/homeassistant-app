@@ -6,9 +6,21 @@ import { randomUUID } from 'node:crypto';
 import { GatewayError } from './gateway.mjs';
 
 const MiB = 1024 * 1024;
-const logName = /^\d{4}-\d{2}-\d{2}T[\d-]+Z-[a-f0-9-]+\.log$/;
+const legacyLogName = /^\d{4}-\d{2}-\d{2}T[\d-]+Z-[a-f0-9-]+\.log$/;
+const namedLogName =
+  /^[\p{L}\p{N}][\p{L}\p{N}._-]{0,47}_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z(?:-\d+)?\.log$/u;
+const isLogName = (name) =>
+  typeof name === 'string' && (legacyLogName.test(name) || namedLogName.test(name));
+
+function filePrefix(name) {
+  const safe = String(name || '')
+    .normalize('NFC')
+    .replace(/[^\p{L}\p{N}._-]+/gu, '_')
+    .replace(/^[._-]+|[._-]+$/g, '');
+  return [...safe].slice(0, 48).join('') || 'SLS';
+}
+
 export const UDP_DEFAULTS = Object.freeze({
-  enabled: false,
   source: '',
   host: '',
   port: 5514,
@@ -20,10 +32,9 @@ export function unicastIPv4(value) {
   const octets = value.split('.').map(Number);
   return octets[0] > 0 && octets[0] < 224 && value !== '255.255.255.255';
 }
-export function validateUdpConfig(input, reservedPort = 8881) {
+export function validateUdpConfig(input, reservedPort = 8881, { allowMissingSource = false } = {}) {
   if (
-    typeof input.enabled !== 'boolean' ||
-    !unicastIPv4(input.source) ||
+    (!(allowMissingSource && input.source === '') && !unicastIPv4(input.source)) ||
     (input.host && !unicastIPv4(input.host))
   )
     throw new GatewayError('Укажите IPv4 контроллера и корректный адрес получателя', 'validation');
@@ -41,7 +52,6 @@ export function validateUdpConfig(input, reservedPort = 8881) {
       'validation',
     );
   return {
-    enabled: input.enabled,
     source: input.source,
     host: input.host || '',
     port: input.port,
@@ -71,6 +81,8 @@ export class UdpLog {
       this.sessions.set(id, {
         id,
         sessionId: randomUUID(),
+        name: 'SLS',
+        receiving: false,
         config: { ...UDP_DEFAULTS },
         tail: Promise.resolve(),
         active: null,
@@ -95,8 +107,8 @@ export class UdpLog {
     for (const other of this.sessions.values()) {
       if (
         other.id !== id &&
-        other.config.enabled &&
-        config.enabled &&
+        other.receiving &&
+        config.source &&
         other.config.source === config.source &&
         other.config.port === config.port
       )
@@ -106,25 +118,53 @@ export class UdpLog {
         );
     }
   }
-  async configure(id, config) {
+  async configure(id, config, name = 'SLS') {
     if (this.closed) throw new GatewayError('Приложение останавливается');
+    config = validateUdpConfig(config, this.reservedPort, { allowMissingSource: true });
     this.assertAvailable(id, config);
     const session = this.session(id);
     // Exclude incoming packets while draining the previous configuration.
-    session.config = { ...session.config, enabled: false };
-    await this.serial(session, async () => {
-      session.active = null;
-      await mkdir(this.directory(id), { recursive: true, mode: 0o700 });
-      session.config = { ...config };
-      try {
-        await this.prune(session, config.count);
-        session.error = null;
-      } catch (error) {
-        session.error = `Не удалось применить предел архива: ${error.code || 'ошибка записи'}`;
-        throw error;
-      }
-    });
-    this.syncSockets();
+    session.receiving = false;
+    try {
+      await this.serial(session, async () => {
+        session.active = null;
+        await mkdir(this.directory(id), { recursive: true, mode: 0o700 });
+        session.config = { ...config };
+        session.name = name;
+        try {
+          await this.prune(session, config.count);
+          session.error = null;
+          session.receiving = true;
+        } catch (error) {
+          session.error = `Не удалось применить предел архива: ${error.code || 'ошибка записи'}`;
+          throw error;
+        }
+      });
+    } finally {
+      this.syncSockets();
+    }
+  }
+  async track(entry) {
+    if (this.closed) return;
+    const session = this.session(entry.id);
+    try {
+      // Ignore the old enabled flag: reception now runs for every tracked controller.
+      const config = validateUdpConfig({ ...UDP_DEFAULTS, ...entry.udpLog }, this.reservedPort, {
+        allowMissingSource: true,
+      });
+      const name = entry.name || 'SLS';
+      if (
+        session.receiving &&
+        session.name === name &&
+        Object.keys(config).every((key) => session.config[key] === config[key])
+      )
+        return;
+      await this.configure(entry.id, config, name);
+    } catch (error) {
+      session.receiving = false;
+      session.error = error.message;
+      this.syncSockets();
+    }
   }
   async start(entries) {
     if (this.closed) return;
@@ -136,19 +176,14 @@ export class UdpLog {
         await rm(this.directory(dir.name), { recursive: true, force: true });
     }
     for (const entry of entries) {
-      if (!entry.udpLog || this.closed) continue;
-      try {
-        await this.configure(entry.id, validateUdpConfig(entry.udpLog, this.reservedPort));
-      } catch (error) {
-        this.session(entry.id).error = error.message;
-      }
+      await this.track(entry);
     }
   }
   syncSockets() {
     if (this.closed) return;
     const ports = new Set(
       [...this.sessions.values()]
-        .filter((s) => s.config.enabled && !s.removing)
+        .filter((s) => s.receiving && !s.removing)
         .map((s) => s.config.port),
     );
     for (const [port, record] of this.sockets) {
@@ -188,8 +223,7 @@ export class UdpLog {
   receive(port, source, buffer) {
     if (this.closed || buffer.length > 65507 || !buffer.length) return;
     const session = [...this.sessions.values()].find(
-      (s) =>
-        !s.removing && s.config.enabled && s.config.port === port && s.config.source === source,
+      (s) => !s.removing && s.receiving && s.config.port === port && s.config.source === source,
     );
     if (!session) return;
     // Reject unrelated UDP traffic. Preserve the controller's original bytes and milliseconds.
@@ -228,10 +262,19 @@ export class UdpLog {
     if (!session.active || session.active.size + buffer.length > session.config.sizeMiB * MiB) {
       session.active = null;
       await this.prune(session, session.config.count - 1);
-      const name = new Date().toISOString().replace(/[:.]/g, '-') + '-' + randomUUID() + '.log';
-      const handle = await open(join(this.directory(session.id), name), 'wx', 0o600);
-      await handle.close();
-      session.active = { name, size: 0 };
+      const base = filePrefix(session.name) + '_' + new Date().toISOString().replace(/[:.]/g, '-');
+      // Exclusive creation also handles a restart or rotation within the same millisecond.
+      for (let index = 0; ; index++) {
+        const name = base + (index ? '-' + index : '') + '.log';
+        try {
+          const handle = await open(join(this.directory(session.id), name), 'wx', 0o600);
+          await handle.close();
+          session.active = { name, size: 0 };
+          break;
+        } catch (error) {
+          if (error.code !== 'EEXIST') throw error;
+        }
+      }
     }
     const handle = await open(join(this.directory(session.id), session.active.name), 'a');
     try {
@@ -252,7 +295,7 @@ export class UdpLog {
     }
     const files = [];
     for (const item of names) {
-      if (!item.isFile() || !logName.test(item.name)) continue;
+      if (!item.isFile() || !isLogName(item.name)) continue;
       try {
         const info = await stat(join(directory, item.name));
         files.push({
@@ -266,7 +309,7 @@ export class UdpLog {
         if (error.code !== 'ENOENT') throw error;
       }
     }
-    return files.sort((a, b) => a.name.localeCompare(b.name));
+    return files.sort((a, b) => a.start - b.start || a.end - b.end || a.name.localeCompare(b.name));
   }
   async prune(session, keep) {
     const files = await this.files(session.id);
@@ -284,8 +327,8 @@ export class UdpLog {
       files: files.reverse(),
       totalBytes: files.reduce((sum, file) => sum + file.size, 0),
       limitBytes: config.sizeMiB * MiB * config.count,
-      listening: Boolean(config.enabled && socket?.ready),
-      error: session.error || (config.enabled && socket?.error) || null,
+      listening: Boolean(session.receiving && socket?.ready),
+      error: session.error || (session.receiving && socket?.error) || null,
       lastReceived: session.lastReceived,
       lastWritten: session.lastWritten,
       dropped: session.dropped,
@@ -294,7 +337,7 @@ export class UdpLog {
     };
   }
   async read(id, name, { download = false } = {}) {
-    if (!logName.test(name)) throw new GatewayError('Некорректное имя файла', 'validation');
+    if (!isLogName(name)) throw new GatewayError('Некорректное имя файла', 'validation');
     if (!(await this.files(id)).some((file) => file.name === name))
       throw new GatewayError('Файл не найден', 'not_found');
     let handle;
@@ -327,8 +370,11 @@ export class UdpLog {
     const session = this.session(id);
     return this.serial(session, async () => {
       if (session.active?.name === name)
-        throw new GatewayError('Сначала остановите запись в этот файл', 'validation');
-      if (!logName.test(name) || !(await this.files(id)).some((file) => file.name === name))
+        throw new GatewayError(
+          'Этот файл ещё записывается. Его можно удалить после перехода к следующему файлу.',
+          'validation',
+        );
+      if (!isLogName(name) || !(await this.files(id)).some((file) => file.name === name))
         throw new GatewayError('Файл не найден', 'not_found');
       await unlink(join(this.directory(id), name));
     });

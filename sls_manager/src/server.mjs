@@ -92,7 +92,8 @@ export function createServer(manager, { standalone = false } = {}) {
           const download = url.searchParams.get('download') === '1';
           const result = await manager.udpLog.read(id, name, { download });
           if (!download) return json(200, result);
-          res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}"`, 'Content-Length': result.size });
+          const asciiName = name.replace(/[^\x20-\x7e]/g, '_');
+          res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Disposition': `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(name)}`, 'Content-Length': result.size });
           if (result.stream) await pipeline(result.stream, res);
           else res.end();
           return;
