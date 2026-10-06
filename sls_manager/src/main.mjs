@@ -70,7 +70,7 @@ server.on('error', (error) => {
 });
 server.listen(port, standalone ? '127.0.0.1' : '0.0.0.0', () => {
   console.log(
-    `SLS 0.1.12 started (${standalone ? 'localhost development' : 'Home Assistant Ingress'}), port ${port}`,
+    `SLS 0.1.13 started (${standalone ? 'localhost development' : 'Home Assistant Ingress'}), port ${port}`,
   );
   discovery.start();
   void mqttDiscovery.start();
@@ -81,14 +81,16 @@ server.listen(port, standalone ? '127.0.0.1' : '0.0.0.0', () => {
       .then(updateSidebar)
       .catch(sidebarError);
 });
-function shutdown() {
+async function shutdown() {
   stopSidebar();
-  manager.close();
+  const stopped = manager.close();
   mqttDiscovery.close();
   discovery.close();
   server.close();
   server.closeIdleConnections();
-  setTimeout(() => process.exit(), 2000).unref();
+  setTimeout(() => process.exit(), 10000).unref();
+  await stopped;
+  server.closeAllConnections();
 }
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);

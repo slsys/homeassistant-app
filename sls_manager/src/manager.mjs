@@ -11,6 +11,8 @@ import {
 import { MqttMonitor, EventMonitor } from './monitor.mjs';
 import { publishReboot } from './mqtt-command.mjs';
 import { RebootTracker } from './reboot.mjs';
+import { UdpLog, UDP_DEFAULTS, validateUdpConfig, unicastIPv4 } from './udp-log.mjs';
+import { UdpSender } from './udp-sender.mjs';
 
 export class Manager {
   constructor(store, discovery, { pollInterval = 60, mqttDiscovery = null, homeAssistant = null } = {}) {
@@ -23,6 +25,8 @@ export class Manager {
     this.reboots = new RebootTracker();
     this.mutations = Promise.resolve();
     this.stopped = false;
+    this.udpLog = new UdpLog(store.directory, { reservedPort: discovery.options?.multicast_port || 8881 });
+    this.udpSender = new UdpSender(this.udpLog);
   }
   mutate(action) {
     const pending = this.mutations.catch(() => {}).then(action);
@@ -313,7 +317,7 @@ export class Manager {
   }
   state() {
     return {
-      version: '0.1.12',
+      version: '0.1.13',
       sidebarInstallation: this.sidebarInstallation || null,
       discovery: {
         ...this.discovery.status,
@@ -352,6 +356,7 @@ export class Manager {
       token: hasCredentials ? credentialToken(input) : old?.token || '',
       monitoring: old?.monitoringMode !== 'off',
       monitoringMode: old?.monitoringMode || 'on',
+      ...(old?.udpLog ? { udpLog: old.udpLog } : {}),
     };
     const info = await requestGateway(entry, '/api/info');
     if (!info || typeof info.version !== 'string' || typeof info.board !== 'string')
@@ -544,6 +549,38 @@ export class Manager {
     await monitor.open();
     return monitor.snapshot();
   }
+  async udpStatus(id) {
+    const entry = this.entry(id);
+    const result = await this.udpLog.snapshot(id);
+    let source = entry.address ? new URL(entry.address).hostname : this.observation(entry).remote?.address;
+    if (!unicastIPv4(source)) source = '';
+    result.config = { ...UDP_DEFAULTS, source, ...entry.udpLog };
+    result.sender = this.udpSender.status.get(id) || null;
+    result.httpAvailable = entry.mode !== 'mqtt';
+    return result;
+  }
+  configureUdp(id, input) {
+    return this.mutate(async () => {
+      const entry = this.entry(id);
+      const config = validateUdpConfig(input, this.udpLog.reservedPort);
+      this.udpLog.assertAvailable(id, config);
+      const previous = entry.udpLog;
+      entry.udpLog = config;
+      try { await this.store.save(); }
+      catch (error) { entry.udpLog = previous; throw error; }
+      await this.udpLog.configure(id, config);
+      return this.udpStatus(id);
+    });
+  }
+  udpSenderAction(id, body) {
+    return this.mutate(() => {
+      const entry = this.httpEntry(id);
+      if (body.action === 'inspect') return this.udpSender.inspect(entry);
+      if (body.action === 'preview') return this.udpSender.preview(entry, body);
+      if (body.action === 'apply') return this.udpSender.apply(entry, body.token);
+      throw new GatewayError('Неизвестная операция настройки UDP', 'validation');
+    });
+  }
   remove(id) {
     return this.mutate(() => this.removeGateway(id));
   }
@@ -553,10 +590,13 @@ export class Manager {
     this.store.entries = this.store.entries.filter((e) => e.id !== id);
     try {
       await this.store.save();
+      await this.udpLog.remove(id);
     } catch (error) {
       this.store.entries = before;
+      await this.store.save();
       throw error;
     }
+    this.udpSender.remove(id);
     const rt = this.runtimes.get(id);
     rt?.monitor.stop();
     rt?.events.close();
@@ -565,6 +605,8 @@ export class Manager {
   }
   start() {
     this.stopped = false;
+    this.udpReady = this.mutate(() => this.udpLog.start(this.store.entries));
+    void this.udpReady.catch(error => console.error('UDP log startup:', error.code || error.message));
     let busy = false;
     const tick = async () => {
       if (busy) return;
@@ -592,5 +634,6 @@ export class Manager {
       rt.monitor.stop();
       rt.events.close();
     }
+    return this.udpLog.close();
   }
 }

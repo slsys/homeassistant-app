@@ -14,6 +14,8 @@ const state = {
   editId: null,
   discoveryId: null,
   mqttDirty: false,
+  udpDirty: false,
+  logView: 'ws',
   events: [],
   polling: false,
   detailBusy: false,
@@ -137,6 +139,7 @@ function preserveScroll(render) {
     '#devices-list',
     '#ha-objects',
     '#ha-kinds',
+    '#log-files-panel .table-wrap',
   ];
   const positions = selectors.flatMap((selector) => {
     const node = $(selector);
@@ -252,10 +255,13 @@ async function trackMqtt(device, button) {
 }
 async function forgetGateway(gateway, button) {
   if (!gateway) return;
+  let archive;
+  try { archive = await api('gateways/' + gateway.id + '/udp'); }
+  catch (error) { toast(error.message, true); return; }
   if (
     !(await confirmAction(
       'Убрать ' + gateway.name + ' из отслеживания?',
-      'Сохранённый доступ будет удалён. Настройки контроллера и сущности в HA сохранятся. Контроллер останется в списке видимых.',
+      `Сохранённый доступ и все файлы UDP-лога будут удалены без восстановления: ${archive.files.length} файлов, ${(archive.totalBytes / 1048576).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} МиБ. Настройки контроллера и сущности HA сохранятся.`,
     ))
   )
     return;
@@ -263,6 +269,7 @@ async function forgetGateway(gateway, button) {
     await api('gateways/' + gateway.id, {}, 'DELETE');
     if (state.selected === gateway.id) {
       state.mqttDirty = false;
+      state.udpDirty = false;
       $('#overview-nav').click();
     }
     await poll();
@@ -374,11 +381,12 @@ $('#connect-form').onsubmit = async (event) => {
 async function showOverview(record = true, skipConfirm = false) {
   if (
     !skipConfirm &&
-    state.mqttDirty &&
-    !(await confirmAction('Покинуть настройки?', 'Несохранённые настройки MQTT будут потеряны.'))
+    (state.mqttDirty || state.udpDirty) &&
+    !(await confirmAction('Покинуть настройки?', 'Несохранённые настройки будут потеряны.'))
   )
     return false;
   state.mqttDirty = false;
+  state.udpDirty = false;
   state.selected = null;
   state.detail = null;
   state.switching++;
@@ -394,13 +402,13 @@ $('.brand').onclick = (event) => {
   event.preventDefault();
   void showOverview();
 };
-async function selectGateway(id, { record = true, tab = 'devices', skipConfirm = false } = {}) {
+async function selectGateway(id, { record = true, tab = 'devices', logView = 'ws', skipConfirm = false } = {}) {
   if (
     !skipConfirm &&
-    state.mqttDirty &&
+    (state.mqttDirty || state.udpDirty) &&
     state.selected &&
     state.selected !== id &&
-    !(await confirmAction('Покинуть настройки?', 'Несохранённые настройки MQTT будут потеряны.'))
+    !(await confirmAction('Покинуть настройки?', 'Несохранённые настройки будут потеряны.'))
   )
     return;
   if (state.data && !state.data.gateways.some((g) => g.id === id)) {
@@ -409,13 +417,23 @@ async function selectGateway(id, { record = true, tab = 'devices', skipConfirm =
     return;
   }
   if (state.selected === id) {
+    const previous = state.logView;
+    const previousTab = state.tab;
+    state.logView = logView;
     showTab(tab, record);
+    if (previousTab === 'events' && tab === 'events' && previous !== state.logView) {
+      state.eventView++;
+      window.slsUdp.activate();
+      if (state.logView === 'ws') void loadEvents(true);
+    }
     await loadDetail(true);
     return;
   }
   state.selected = id;
   state.detail = null;
   state.mqttDirty = false;
+  state.udpDirty = false;
+  state.logView = logView;
   state.switching++;
   $('#overview').hidden = true;
   $('#gateway-view').hidden = false;
@@ -426,7 +444,7 @@ async function selectGateway(id, { record = true, tab = 'devices', skipConfirm =
   $('#gateway-summary').replaceChildren();
   window.slsViews.reset(id);
   $('#detail-ha').replaceChildren();
-  if (entry?.mode === 'mqtt' && ['devices', 'events'].includes(tab)) tab = 'mqtt';
+  if (entry?.mode === 'mqtt' && tab === 'devices') tab = 'mqtt';
   state.tab = null;
   showTab(tab, false);
   if (record) commitRoute(id, tab);
@@ -464,7 +482,7 @@ function renderDetailContent() {
     `${g.webAddress ? new URL(g.webAddress).host : g.mqtt?.prefix || '—'} · ${g.info?.board || 'SLS'} · последнее чтение ${ago(g.lastSuccess)}`;
   const remote = g.mode === 'mqtt';
   $('.tabs').hidden = false;
-  $('[data-tab="events"]').hidden = remote;
+  $('[data-tab="events"]').hidden = false;
   $('[data-tab="devices"]').hidden = remote;
   $('[data-tab="mqtt"]').hidden = !g.mqtt?.enabled;
   $('.mqtt-panel').hidden = remote;
@@ -589,7 +607,8 @@ $('#edit-gateway').onclick = () => state.detail && openConnect(null, state.detai
 function showTab(tab, record = true) {
   if (!['devices', 'mqtt', 'ha', 'integration', 'events'].includes(tab)) tab = 'devices';
   const remote = state.data?.gateways.find((g) => g.id === state.selected)?.mode === 'mqtt';
-  if (remote && ['devices', 'events'].includes(tab)) tab = 'mqtt';
+  if (remote && tab === 'devices') tab = 'mqtt';
+  if (remote && state.logView === 'ws') state.logView = 'udp';
   const changed = state.tab !== tab;
   if (changed) state.eventView++;
   state.tab = tab;
@@ -603,7 +622,8 @@ function showTab(tab, record = true) {
     $(`#tab-${name}`).hidden = name !== tab;
   if (remote) $('#tab-devices').hidden = true;
   window.slsViews.tabChanged();
-  if (tab === 'events' && changed) {
+  if (tab === 'events') window.slsUdp.activate();
+  if (tab === 'events' && changed && state.logView === 'ws') {
     state.events = [];
     $('#events-cache-status').textContent = 'Загрузка кэша лога…';
     $('#events-status').textContent = 'Открываем лог…';
@@ -747,7 +767,7 @@ $('#clear-log').onclick = async (event) => {
   });
 };
 async function loadEvents(open = false) {
-  if (!state.selected || state.tab !== 'events' || (state.eventBusy && !open)) return;
+  if (!state.selected || state.tab !== 'events' || state.logView !== 'ws' || (state.eventBusy && !open)) return;
   const request = {};
   state.eventBusy = request;
   const id = state.selected;
@@ -756,6 +776,7 @@ async function loadEvents(open = false) {
   const current = () =>
     id === state.selected &&
     state.tab === 'events' &&
+    state.logView === 'ws' &&
     view === state.eventView &&
     switching === state.switching;
   try {
@@ -820,6 +841,7 @@ function readRoute() {
   return {
     id: id && /^[a-zA-Z0-9-]+$/.test(id) ? id : null,
     tab: ['devices', 'mqtt', 'ha', 'integration', 'events'].includes(tab) ? tab : 'devices',
+    logView: ['ws', 'udp', 'files', 'settings'].includes(params.get('log')) ? params.get('log') : 'ws',
   };
 }
 let routeIndex = Number.isInteger(history.state?.slsIndex) ? history.state.slsIndex : 0;
@@ -831,6 +853,7 @@ function commitRoute(id, tab, replace = false) {
   if (id) {
     params.set('controller', id);
     params.set('tab', tab);
+    if (tab === 'events') params.set('log', state.logView);
   }
   url.hash = params.toString();
   if (!replace && url.href === location.href) return;
@@ -845,8 +868,8 @@ window.addEventListener('popstate', async (event) => {
   const generation = ++routeGeneration;
   const route = readRoute();
   const nextIndex = Number.isInteger(event.state?.slsIndex) ? event.state.slsIndex : 0;
-  if (state.mqttDirty && route.id !== state.selected) {
-    const leave = await confirmAction('Покинуть настройки?', 'Несохранённые настройки MQTT будут потеряны.');
+  if ((state.mqttDirty || state.udpDirty) && route.id !== state.selected) {
+    const leave = await confirmAction('Покинуть настройки?', 'Несохранённые настройки будут потеряны.');
     if (generation !== routeGeneration) return;
     if (!leave) {
       const delta = routeIndex - nextIndex;
@@ -858,15 +881,17 @@ window.addEventListener('popstate', async (event) => {
     }
   }
   routeIndex = nextIndex;
-  if (route.id) await selectGateway(route.id, { tab: route.tab, record: false, skipConfirm: true });
+  if (route.id) await selectGateway(route.id, { tab: route.tab, logView: route.logView, record: false, skipConfirm: true });
   else await showOverview(false, true);
 });
 async function startPage() {
   await poll();
   const route = readRoute();
+  state.logView = route.logView;
   commitRoute(route.id, route.tab, true);
-  if (route.id) await selectGateway(route.id, { tab: route.tab, record: false, skipConfirm: true });
+  if (route.id) await selectGateway(route.id, { tab: route.tab, logView: route.logView, record: false, skipConfirm: true });
 }
+window.slsUdp.init({ api, apiBase, state, toast, confirm: confirmAction, route: commitRoute, openWs: () => loadEvents(true), preserveScroll });
 window.slsViews.init();
 void startPage();
 setInterval(() => {

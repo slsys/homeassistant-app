@@ -1790,3 +1790,28 @@ th[aria-sort='descending'] {
 }
 
 .status-dot.unknown { background: var(--muted, #89949c); }
+
+.log-tabs, .udp-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.log-tabs button[aria-selected='true'] { color: var(--accent); border-color: var(--accent); }
+.log-tabs button:last-child { margin-left: auto; }
+#log-settings-panel { max-width: 900px; }
+#udp-config h3 { margin: 16px 0 8px; }
+#udp-config > label { max-width: 420px; }
+#udp-config .udp-check { flex-direction: row; align-items: center; gap: 6px; }
+#udp-config .udp-check input { width: auto; margin: 0; }
+.udp-actions { margin-top: 12px; }
+.udp-line, .udp-code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre; }
+.udp-line { width: max-content; min-width: 100%; font-size: 12px; line-height: 1.6; }
+.udp-code { overflow: auto; max-height: 260px; padding: 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+.udp-filename { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+#log-files-panel .table-wrap { overflow: auto; }
+#log-files-panel td:last-child { white-space: nowrap; }
+#udp-plan { width: min(760px, calc(100% - 24px)); }
+#udp-plan form { min-width: 0; }
+#udp-lines { overflow-anchor: none; }
+#log-udp-panel .section-title { flex-wrap: wrap; }
+#udp-search { width: min(220px, 100%); }
+@media (max-width: 620px) {
+  .log-tabs button:last-child { margin-left: 0; }
+  .udp-actions button { flex: 1; }
+}

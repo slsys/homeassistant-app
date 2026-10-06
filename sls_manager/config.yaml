@@ -1,5 +1,5 @@
 name: SLS
-version: 0.1.12
+version: 0.1.13
 slug: sls_manager
 stage: experimental
 description: Discover SLS controllers with LocalLink and manage their Home Assistant connection.

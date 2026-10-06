@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { pipeline } from 'node:stream/promises';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { GatewayError } from './gateway.mjs';
@@ -10,6 +11,7 @@ const files = {
   '/controllers.js': ['controllers.js', 'text/javascript; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   '/log-time.js': ['log-time.js', 'text/javascript; charset=utf-8'],
+  '/udp-log.js': ['udp-log.js', 'text/javascript; charset=utf-8'],
   '/style.css': ['style.css', 'text/css; charset=utf-8'],
   '/mark.svg': ['mark.svg', 'image/svg+xml'],
 };
@@ -78,6 +80,30 @@ export function createServer(manager, { standalone = false } = {}) {
         return json(201, await manager.connect(await jsonBody(req)));
       if (url.pathname === '/api/mqtt-tracking' && req.method === 'POST')
         return json(201, await manager.trackMqtt((await jsonBody(req)).prefix));
+      const udp = url.pathname.match(/^\/api\/gateways\/([a-zA-Z0-9-]+)\/udp(?:\/(sender|file))?$/);
+      if (udp) {
+        const [, id, operation] = udp;
+        manager.entry(id);
+        if (!operation && req.method === 'GET') return json(200, await manager.udpStatus(id));
+        if (!operation && req.method === 'POST') return json(200, await manager.configureUdp(id, await jsonBody(req)));
+        if (operation === 'sender' && req.method === 'POST') return json(200, await manager.udpSenderAction(id, await jsonBody(req)));
+        if (operation === 'file' && req.method === 'GET') {
+          const name = url.searchParams.get('name') || '';
+          const download = url.searchParams.get('download') === '1';
+          const result = await manager.udpLog.read(id, name, { download });
+          if (!download) return json(200, result);
+          res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}"`, 'Content-Length': result.size });
+          if (result.stream) await pipeline(result.stream, res);
+          else res.end();
+          return;
+        }
+        if (operation === 'file' && req.method === 'DELETE') {
+          const body = await jsonBody(req);
+          await manager.mutate(async () => { manager.entry(id); await manager.udpLog.deleteFile(id, body.name); });
+          return json(200, { success: true });
+        }
+        return json(405, { error: 'Метод не поддерживается' });
+      }
       const match = url.pathname.match(
         /^\/api\/gateways\/([a-zA-Z0-9-]+)(?:\/(refresh|join|mqtt|monitor|events|reboot|ha))?$/,
       );

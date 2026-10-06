@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.13
+
+- Add a My Home Assistant button to simplify adding the SLS repository.
+- Record controller UDP logs in the background, including when the application page is closed.
+- Configure recording and manage each controller's archive from its Log tab, with file size and retention limits.
+- View, filter, download and delete log files while preserving millisecond timestamps and unwrapped lines.
+- Preview UDP sender changes, detect existing init.lua settings and preserve the rest of the script with backups and verification.
+- Support temporary sender control and persistent enable/disable; leave ambiguous scripts unchanged.
+- Remove the complete log archive when its controller is removed, and preserve navigation between log views.
+
 ## 0.1.12
 
 - Use the Home Assistant MQTT integration by default for discovery, monitoring and reboot commands, including external brokers.

@@ -10,6 +10,7 @@
     <script src="./theme.js" defer></script>
     <script src="./log-time.js" defer></script>
     <script src="./controllers.js" defer></script>
+    <script src="./udp-log.js" defer></script>
     <script src="./app.js" defer></script>
   </head>
   <body>
@@ -26,7 +27,7 @@
         <header class="page-header app-header">
           <h1 id="page-title">Контроллеры</h1>
           <div class="topbar-tools">
-            <span class="app-version">v0.1.12</span>
+            <span class="app-version">v0.1.13</span>
             <label class="theme-control"
               ><span>Тема</span
               ><select id="theme-select" aria-label="Тема оформления">
@@ -274,7 +275,13 @@
             </div>
           </section>
           <section id="tab-events" class="tab-content" hidden>
-            <div class="panel">
+            <div class="log-tabs" role="tablist" aria-label="Лог контроллера">
+              <button id="log-ws-tab" data-log-view="ws" role="tab" aria-controls="log-ws-panel" aria-selected="true">Текущий лог</button>
+              <button id="log-udp-tab" data-log-view="udp" role="tab" aria-controls="log-udp-panel" aria-selected="false">UDP-лог</button>
+              <button id="log-files-tab" data-log-view="files" role="tab" aria-controls="log-files-panel" aria-selected="false">Файлы</button>
+              <button id="log-settings-tab" data-log-view="settings" role="tab" aria-controls="log-settings-panel" aria-selected="false">Настройки записи</button>
+            </div>
+            <div class="panel" id="log-ws-panel" role="tabpanel" aria-labelledby="log-ws-tab">
               <div class="section-title">
                 <div>
                   <h2>Лог контроллера</h2>
@@ -295,6 +302,7 @@
               <div id="events-list" class="events"></div>
               <div class="panel-foot">Кэш — при открытии. Далее — WebSocket. До 500 строк.</div>
             </div>
+            <div id="udp-workspace"></div>
           </section>
         </section>
       </main>
