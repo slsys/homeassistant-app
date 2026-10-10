@@ -7,6 +7,7 @@ import { HomeAssistant } from './home-assistant.mjs';
 import { Manager } from './manager.mjs';
 import { createServer } from './server.mjs';
 import { installSidebar } from './sidebar-install.mjs';
+import { ControllerCache } from './controller-cache.mjs';
 
 const standalone = process.argv.includes('--standalone');
 const directory = process.env.SLS_DATA_DIR || (standalone ? resolve('.data') : '/data');
@@ -21,11 +22,13 @@ if (!Number.isInteger(pollInterval) || pollInterval < 30 || pollInterval > 600)
   throw new Error('poll_interval must be 30–600 seconds');
 const store = new Store(directory);
 await store.load();
+const cache = new ControllerCache(directory);
+await cache.load();
 const discovery = new LocalLink(options);
 const mqttDiscovery = new MqttDiscovery({ mode: options.mqtt_mode || 'homeassistant', options });
 for (const entry of store.entries) mqttDiscovery.watchPrefix(entry.mqttPrefix);
 const homeAssistant = new HomeAssistant();
-const manager = new Manager(store, discovery, { pollInterval, mqttDiscovery, homeAssistant });
+const manager = new Manager(store, discovery, { pollInterval, mqttDiscovery, homeAssistant, cache });
 const server = createServer(manager, { standalone });
 const port = Number(process.env.SLS_PORT || 8099);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid SLS_PORT');
@@ -70,7 +73,7 @@ server.on('error', (error) => {
 });
 server.listen(port, standalone ? '127.0.0.1' : '0.0.0.0', () => {
   console.log(
-    `SLS 0.1.14 started (${standalone ? 'localhost development' : 'Home Assistant Ingress'}), port ${port}`,
+    `SLS 0.1.15 started (${standalone ? 'localhost development' : 'Home Assistant Ingress'}), port ${port}`,
   );
   discovery.start();
   void mqttDiscovery.start();

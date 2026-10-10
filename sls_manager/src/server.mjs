@@ -76,6 +76,11 @@ export function createServer(manager, { standalone = false } = {}) {
         return res.end(content);
       }
       if (url.pathname === '/api/state' && req.method === 'GET') return json(200, manager.state());
+      if (url.pathname === '/api/discovery/search') {
+        if (req.method !== 'POST') return json(405, { error: 'Метод не поддерживается' });
+        await jsonBody(req);
+        return json(200, manager.discovery.search());
+      }
       if (url.pathname === '/api/gateways' && req.method === 'POST')
         return json(201, await manager.connect(await jsonBody(req)));
       if (url.pathname === '/api/mqtt-tracking' && req.method === 'POST')

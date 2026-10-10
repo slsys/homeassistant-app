@@ -1150,6 +1150,33 @@ summary {
   border-radius: 6px;
   background: var(--input);
 }
+.discovery-search {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 5px;
+}
+.discovery-search svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.discovery-search.is-searching svg {
+  animation: reboot-spin 0.85s linear infinite;
+}
+#locallink-search-status {
+  margin-bottom: 6px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .discovery-search.is-searching svg { animation: none; }
+}
 .filter:focus-within {
   border-color: var(--accent);
 }
@@ -1789,7 +1816,7 @@ th[aria-sort='descending'] {
   white-space: nowrap;
 }
 
-.status-dot.unknown { background: var(--muted, #89949c); }
+.status-dot.unknown { background: #e5b000; }
 
 .log-tabs, .udp-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
 .log-tabs button[aria-selected='true'] { color: var(--accent); border-color: var(--accent); }

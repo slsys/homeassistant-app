@@ -34,8 +34,8 @@ window.slsViews = (() => {
   function sorted(items, group, value, availability = false) {
     const sort = sorts[group];
     return [...items].sort((a, b) => {
-      if (availability && Boolean(a.online) !== Boolean(b.online))
-        return Number(Boolean(b.online)) - Number(Boolean(a.online));
+      const statusOrder = connectionRank(b.online) - connectionRank(a.online);
+      if (availability && statusOrder) return statusOrder;
       const av = value(a, sort.key),
         bv = value(b, sort.key);
       const missingA = av == null || av === '' || av === '—',
@@ -147,7 +147,7 @@ window.slsViews = (() => {
           (value) => /^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(value || ''),
         ) || '',
       online: saved ? g.connected : g.availability === 'unknown' ? null : g.online,
-      last: saved ? g.lastDataAt : g.lastSeen,
+      last: saved ? g.lastDataAt : g.lastDataAt || g.lastSeen,
       ha: g.ha,
     };
   }

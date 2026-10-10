@@ -22,6 +22,9 @@ const state = {
   eventBusy: null,
   eventView: 0,
   switching: 0,
+  discoveryRequest: false,
+  discoveryRevision: 0,
+  searchRetryAt: 0,
 };
 const apiBase = new URL('./', window.location.href);
 async function api(path, body, method = 'POST') {
@@ -50,10 +53,13 @@ function toast(message, error = false) {
 function badge(text, mode = '') {
   return el('span', `badge ${mode}`, text);
 }
+function connectionRank(connected) {
+  return connected === null ? 1 : connected ? 2 : 0;
+}
 function connectionDot(connected) {
   const unknown = connected === null;
   const dot = el('span', 'status-dot' + (unknown ? ' unknown' : connected ? '' : ' off'));
-  const label = unknown ? 'Доступность неизвестна: нет свежих данных MQTT' : connected ? 'На связи' : 'Нет связи';
+  const label = unknown ? 'Ожидаем свежие данные контроллера' : connected ? 'На связи' : 'Нет связи';
   dot.setAttribute('role', 'img');
   dot.setAttribute('aria-label', label);
   dot.title = label;
@@ -310,9 +316,11 @@ function renderOverviewContent() {
     ? `Всего: ${gateways.length}`
     : 'Нет подключённых контроллеров';
   showNotice('#discovery-error', discovery.error);
+  showNotice('#cache-error', state.data.cacheError);
+  renderDiscoverySearch();
   $('#gateway-nav').replaceChildren();
   for (const gateway of [...gateways].sort(
-    (a, b) => Number(b.connected) - Number(a.connected) || a.name.localeCompare(b.name),
+    (a, b) => connectionRank(b.connected) - connectionRank(a.connected) || a.name.localeCompare(b.name),
   )) {
     const nav = el('button', 'nav-item' + (gateway.id === state.selected ? ' active' : ''));
     nav.append(connectionDot(gateway.connected), document.createTextNode(gateway.name));
@@ -322,11 +330,54 @@ function renderOverviewContent() {
   window.slsViews.overview(gateways, discovery);
   $('#overview-nav').classList.toggle('active', !state.selected);
 }
+function renderDiscoverySearch() {
+  const discovery = state.data?.discovery;
+  const search = discovery?.search;
+  const button = $('#discovery-search');
+  const active = state.discoveryRequest || Boolean(search?.active);
+  const wait = Math.max(0, Math.ceil((state.searchRetryAt - performance.now()) / 1000));
+  const available = discovery?.listening && discovery.interfaces?.length;
+  button.disabled = active || !available || wait > 0;
+  button.classList.toggle('is-searching', active);
+  button.setAttribute('aria-busy', String(active));
+  button.title = active ? 'Поиск LocalLink…' : !available ? 'LocalLink недоступен'
+    : wait ? `Повторный поиск через ${wait} с` : 'Найти контроллеры LocalLink';
+  const status = $('#locallink-search-status');
+  status.hidden = !search && !active;
+  status.textContent = active ? 'Поиск LocalLink…' : search
+    ? `LocalLink: ответили — ${search.received}, новых — ${search.newCount}.` : '';
+  if (search?.error) status.textContent += ' ' + search.error;
+}
+$('#discovery-search').onclick = async () => {
+  if (state.discoveryRequest) return;
+  state.discoveryRequest = true;
+  renderDiscoverySearch();
+  try {
+    const search = await api('discovery/search', {});
+    state.discoveryRevision += 1;
+    if (state.data) state.data.discovery.search = search;
+    state.searchRetryAt = performance.now() + search.retryAfterMs;
+    await poll();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    state.discoveryRequest = false;
+    renderDiscoverySearch();
+  }
+};
 async function poll() {
   if (state.polling) return;
   state.polling = true;
   try {
-    state.data = await api('state');
+    const discoveryRevision = state.discoveryRevision;
+    const data = await api('state');
+    // A state request started before the button click must not hide a newer search.
+    if (discoveryRevision !== state.discoveryRevision) {
+      data.discovery.search = state.data.discovery.search;
+    } else {
+      state.searchRetryAt = performance.now() + (data.discovery.search?.retryAfterMs || 0);
+    }
+    state.data = data;
     for (const gateway of state.data.gateways) reconcileReboot(gateway);
     showNotice('#connection-error', null);
     renderOverview();
@@ -502,7 +553,7 @@ function renderDetailContent() {
   );
   $('#gateway-summary').replaceChildren();
   const values = [
-    ['Связь с контроллером', g.connected ? 'Подключён' : 'Нет связи'],
+    ['Связь с контроллером', g.connected === null ? 'Ожидаем данные' : g.connected ? 'Подключён' : 'Нет связи'],
     ['Прошивка', g.info?.version || '—'],
     remote ? ['Аптайм', uptime(g.uptime)] : ['Zigbee-канал', g.coordinator?.coordinator?.channel ?? '—'],
     ['Свободная память', 'RAM ' + bytes(g.info?.mem_heap_free), 'PSRAM ' + bytes(g.info?.mem_psram_free)],
@@ -897,6 +948,11 @@ void startPage();
 setInterval(() => {
   if (!document.hidden) void poll();
 }, 10000);
+setInterval(() => {
+  if (document.hidden || state.selected) return;
+  renderDiscoverySearch();
+  if (state.data?.discovery.search?.active) void poll();
+}, 1000);
 setInterval(() => {
   if (!document.hidden && state.selected) void loadDetail();
 }, 15000);

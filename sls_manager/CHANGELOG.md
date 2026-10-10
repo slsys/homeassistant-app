@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.15
+
+- Restore the last known HTTP, MQTT and LocalLink controller data after an application restart.
+- Show a yellow availability indicator while waiting for fresh data, then mark the controller offline after three minutes without confirmation.
+- Preserve known telemetry when MQTT Discovery or retained messages provide only partial data.
+- Save controller snapshots in the background and on shutdown, with visible storage error reporting.
+- Discover LocalLink controllers actively with IDENTIFY after startup, interface changes and UDP socket recovery.
+- Add a search button with progress and unique controller counts to the visible controllers list.
+- Repeat each request once, limit search frequency and share active searches across browser sessions.
+- Keep passive heartbeat discovery, update controllers by MAC and preserve availability until heartbeat data expires.
+
 ## 0.1.14
 
 - Start UDP log reception automatically for every tracked controller, including previously disabled receivers.

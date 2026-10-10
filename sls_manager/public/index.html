@@ -27,7 +27,7 @@
         <header class="page-header app-header">
           <h1 id="page-title">Контроллеры</h1>
           <div class="topbar-tools">
-            <span class="app-version">v0.1.14</span>
+            <span class="app-version">v0.1.15</span>
             <label class="theme-control"
               ><span>Тема</span
               ><select id="theme-select" aria-label="Тема оформления">
@@ -39,6 +39,7 @@
           </div>
         </header>
         <div id="connection-error" class="notice danger" role="alert" hidden></div>
+        <div id="cache-error" class="notice" role="status" hidden></div>
         <div id="sidebar-installation" class="notice" role="status" hidden></div>
         <section id="overview">
           <div class="stats">
@@ -93,6 +94,9 @@
               <div class="section-name">
                 <h2>Видимые контроллеры</h2>
                 <span id="visible-caption" class="count">0</span>
+                <button id="discovery-search" class="discovery-search" type="button" aria-label="Найти контроллеры LocalLink" title="Найти контроллеры LocalLink" disabled>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2 5" /></svg>
+                </button>
               </div>
               <label class="filter"
                 ><span aria-hidden="true">⌕</span
@@ -100,11 +104,12 @@
               /></label>
             </div>
             <div id="discovery-error" class="notice" hidden></div>
+            <div id="locallink-search-status" class="muted small" role="status" hidden></div>
             <div id="mqtt-discovery-status" class="muted small"></div>
             <div id="discovered-list"></div>
             <div class="panel-foot" id="discovery-foot">
-              LocalLink и MQTT: новые данные примерно раз в минуту. Зелёный — есть свежие данные, красный —
-              нет связи или данные устарели.
+              Поиск ↻ запрашивает ответ LocalLink сразу. Фоновое обнаружение LocalLink и MQTT продолжается.
+              Зелёный — есть свежие данные, жёлтый — ожидаем подтверждение связи, красный — нет связи или данные устарели.
             </div>
           </section>
         </section>

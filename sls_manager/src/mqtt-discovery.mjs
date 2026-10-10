@@ -3,6 +3,7 @@ import { HomeAssistantMqttClient } from './mqtt-homeassistant.mjs';
 import { DiscoveryCatalog } from './discovery-catalog.mjs';
 import { randomUUID } from 'node:crypto';
 import { isIPv4, isIPv6 } from 'node:net';
+import { cachedMqtt, OFFLINE_TIMEOUT } from './controller-cache.mjs';
 
 const MAX_DEVICES = 512;
 const text = (value, max = 150) =>
@@ -69,6 +70,8 @@ export class MqttDiscovery {
       throw new Error('mqtt_scan_interval must be 120–3600 seconds');
     this.prefixes = new Set();
     this.devices = new Map();
+    this.awaiting = new Map();
+    this.tracked = new Set();
     this.catalog = new DiscoveryCatalog();
     this.states = new Map();
     this.connection = { ready: false, error: null };
@@ -210,6 +213,11 @@ export class MqttDiscovery {
         this.liveTopics.clear();
         this.states.clear();
         this.lastPacketAt = null;
+        for (const device of this.devices.values()) {
+          this.awaiting.set(device.mqttPrefix, this.awaiting.get(device.mqttPrefix) ?? Date.now());
+          delete device.liveUptime;
+          delete device.liveUptimeAt;
+        }
         this.connection = { ready: false, error: null };
         this.activeTopics = new Set();
         clearTimeout(this.topicRetry);
@@ -228,7 +236,11 @@ export class MqttDiscovery {
         clearTimeout(this.topicRetry);
         clearInterval(this.scanTimer);
         this.scanning = false;
-        for (const device of this.devices.values()) device.lastSeen = null;
+        for (const device of this.devices.values()) {
+          this.awaiting.set(device.mqttPrefix, this.awaiting.get(device.mqttPrefix) ?? Date.now());
+          delete device.liveUptime;
+          delete device.liveUptimeAt;
+        }
       };
       on('offline', disconnected);
       on('close', disconnected);
@@ -256,9 +268,14 @@ export class MqttDiscovery {
       if (this.liveTopics.size > 8192) this.liveTopics.delete(this.liveTopics.keys().next().value);
     }
     this.catalog.ingest(topic, payload, { retain }, now);
-    if (!retain && (this.catalog.topics.has(topic) || /\/bridge\/(config|state)$/.test(topic))) {
+    if (!retain && this.catalog.topics.has(topic) && !/\/bridge\/(config|state)$/.test(topic)) {
       for (const device of this.devices.values()) {
-        if (topic.startsWith(device.mqttPrefix + '/')) device.lastDataAt = now;
+        if (topic.startsWith(device.mqttPrefix + '/')) {
+          device.lastDataAt = now;
+          device.lastSeen = now;
+          this.awaiting.delete(device.mqttPrefix);
+          this.states.set(device.mqttPrefix, { value: 'online', retain: false, at: now });
+        }
       }
     }
     const bridge = topic.match(/^(.+)\/bridge\/(config|state)$/);
@@ -271,7 +288,11 @@ export class MqttDiscovery {
           this.states.delete(this.states.keys().next().value);
         this.states.set(prefix, { value: state, retain, at: now });
         const device = this.devices.get(prefix);
-        if (device && !retain && state === 'online') device.lastSeen = now;
+        if (device && !retain) device.lastDataAt = now;
+        if (device && !retain && state === 'online') {
+          device.lastSeen = now;
+          this.awaiting.delete(prefix);
+        }
         return;
       }
       let data;
@@ -294,16 +315,17 @@ export class MqttDiscovery {
       )
         return;
       const device = this.ensure(prefix, now);
+      // Retained telemetry has no original timestamp. Fill gaps without replacing a newer cache.
+      const values = { address: data.IP === '0.0.0.0' ? null : data.IP, version: text(data.Version), uptime: data.Uptime, memory: data.FreeMem };
+      for (const [key, value] of Object.entries(values))
+        if (value !== null && value !== '' && (!retain || device[key] == null || device[key] === '')) device[key] = value;
       Object.assign(device, {
-        address: data.IP === '0.0.0.0' ? null : data.IP,
-        version: text(data.Version),
-        uptime: data.Uptime,
-        memory: data.FreeMem,
         lastSeen: retain ? device.lastSeen : now,
         lastDataAt: retain ? device.lastDataAt : now,
         observedAt: now,
       });
       if (!retain) {
+        this.awaiting.delete(prefix);
         device.liveUptime = data.Uptime;
         device.liveUptimeAt = now;
         this.states.set(prefix, { value: 'online', retain: false, at: now });
@@ -334,13 +356,17 @@ export class MqttDiscovery {
     Object.assign(entry, {
       name: text(device.name) || entry.name,
       board: text(device.model || device.mdl) || entry.board,
-      version: text(device.sw_version || device.sw) || entry.version,
+      version: entry.version || text(device.sw_version || device.sw),
       observedAt: now,
     });
   }
   ensure(prefix, now) {
     if (!this.devices.has(prefix)) {
-      if (this.devices.size >= MAX_DEVICES) this.devices.delete(this.devices.keys().next().value);
+      if (this.devices.size >= MAX_DEVICES) {
+        const oldest = [...this.devices.keys()].find((id) => !this.tracked.has(id)) || this.devices.keys().next().value;
+        this.devices.delete(oldest);
+        this.awaiting.delete(oldest);
+      }
       this.devices.set(prefix, {
         id: 'mqtt:' + prefix,
         mqttPrefix: prefix,
@@ -352,23 +378,38 @@ export class MqttDiscovery {
         lastSeen: null,
         observedAt: now,
       });
+      this.awaiting.set(prefix, now);
     }
     this.watchPrefix(prefix);
     return this.devices.get(prefix);
   }
   list(now = Date.now()) {
     for (const [prefix, device] of this.devices)
-      if (now - device.observedAt > 86400000) this.devices.delete(prefix);
+      if (!this.tracked.has(prefix) && now - Math.max(device.observedAt || 0, this.awaiting.get(prefix) || 0) > 86400000) {
+        this.devices.delete(prefix);
+        this.awaiting.delete(prefix);
+      }
     const status = this.status;
     return [...this.devices.values()].map((device) => {
       const state = this.states.get(device.mqttPrefix)?.value;
-      const online = status.ready && state !== 'offline' &&
-        device.lastSeen !== null && now - device.lastSeen < 180000;
+      const online = status.ready && state !== 'offline' && !this.awaiting.has(device.mqttPrefix) &&
+        device.lastSeen != null && now - device.lastSeen < OFFLINE_TIMEOUT;
       let availability = 'unknown';
       if (online) availability = 'online';
-      else if (status.connected && (state === 'offline' || device.lastSeen !== null)) availability = 'offline';
+      else if (state === 'offline' ||
+        (this.awaiting.has(device.mqttPrefix) ? now - this.awaiting.get(device.mqttPrefix) >= OFFLINE_TIMEOUT
+          : device.lastSeen != null && now - device.lastSeen >= OFFLINE_TIMEOUT)) availability = 'offline';
       return { ...device, source: 'MQTT', mac: null, online, availability };
     });
+  }
+  restore(items, now = Date.now()) {
+    for (const item of items) {
+      const device = cachedMqtt(item);
+      if (!device || this.devices.has(device.mqttPrefix) || this.devices.size >= MAX_DEVICES) continue;
+      this.devices.set(device.mqttPrefix, device);
+      this.awaiting.set(device.mqttPrefix, now);
+      this.watchPrefix(device.mqttPrefix);
+    }
   }
   monitor(prefix) {
     const status = this.status;

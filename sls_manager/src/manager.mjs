@@ -13,20 +13,57 @@ import { publishReboot } from './mqtt-command.mjs';
 import { RebootTracker } from './reboot.mjs';
 import { UdpLog, UDP_DEFAULTS, validateUdpConfig, unicastIPv4 } from './udp-log.mjs';
 import { UdpSender } from './udp-sender.mjs';
+import { OFFLINE_TIMEOUT } from './controller-cache.mjs';
 
 export class Manager {
-  constructor(store, discovery, { pollInterval = 60, mqttDiscovery = null, homeAssistant = null } = {}) {
+  constructor(store, discovery, { pollInterval = 60, mqttDiscovery = null, homeAssistant = null, cache = null } = {}) {
     this.store = store;
     this.discovery = discovery;
     this.mqttDiscovery = mqttDiscovery;
     this.homeAssistant = homeAssistant;
     this.pollInterval = pollInterval;
     this.runtimes = new Map();
+    this.cache = cache;
+    this.startedAt = Date.now();
+    for (const entry of store.entries) if (entry.mode !== 'mqtt') this.runtime(entry);
+    discovery.restore?.(cache?.data.local || []);
+    mqttDiscovery?.restore?.([
+      ...(cache?.data.mqtt || []),
+      ...store.entries.filter((entry) => entry.mode === 'mqtt' && entry.mqttSnapshot)
+        .map((entry) => ({ ...entry.mqttSnapshot, mqttPrefix: entry.mqttPrefix })),
+    ]);
+    this.syncTrackedDiscovery();
     this.reboots = new RebootTracker();
     this.mutations = Promise.resolve();
     this.stopped = false;
     this.udpLog = new UdpLog(store.directory, { reservedPort: discovery.options?.multicast_port || 8881 });
     this.udpSender = new UdpSender(this.udpLog);
+  }
+  syncTrackedDiscovery() {
+    this.discovery.tracked = new Set(this.store.entries.map((entry) => entry.discoveryId).filter(Boolean));
+    if (this.mqttDiscovery) {
+      this.mqttDiscovery.tracked = new Set(this.store.entries.map((entry) =>
+        entry.mqttPrefix || this.runtimes.get(entry.id)?.mqtt?.prefix ||
+        this.cache?.data.http.find((item) => item.id === entry.id && item.address === entry.address)?.mqtt?.prefix,
+      ).filter(Boolean));
+      for (const prefix of this.mqttDiscovery.tracked) this.mqttDiscovery.watchPrefix?.(prefix);
+    }
+  }
+  async saveCache() {
+    if (!this.cache) return;
+    this.syncTrackedDiscovery();
+    try {
+      await this.cache.save({
+        local: this.discovery.list(),
+        mqtt: this.mqttDiscovery?.list() || [],
+        http: this.store.entries.filter((entry) => entry.mode !== 'mqtt').map((entry) => {
+          const rt = this.runtime(entry);
+          return { ...rt, id: entry.id, address: entry.address, lastDataAt: this.rawEntry(entry).lastDataAt };
+        }),
+      });
+    } catch (error) {
+      console.error('Controller cache:', error.code || error.message);
+    }
   }
   mutate(action) {
     const pending = this.mutations.catch(() => {}).then(action);
@@ -60,6 +97,8 @@ export class Manager {
         match.mqttPrefix = remote.mqttPrefix;
         match.mqttOnline = remote.online;
         match.online ||= remote.online;
+        match.availability = match.online ? 'online'
+          : match.availability === 'unknown' || remote.availability === 'unknown' ? 'unknown' : 'offline';
       } else local.push({ ...remote, mqttOnline: remote.online });
     }
     return local.map((d) => ({
@@ -93,8 +132,8 @@ export class Manager {
     const rt = this.runtimes.get(entry.id);
     const { local, remote } = this.observation(entry);
     return [
-      { source: 'HTTP', uptime: rt?.uptime, at: rt?.uptimeAt },
-      { source: 'LocalLink', uptime: local?.uptime, at: local?.lastSeen },
+      { source: 'HTTP', uptime: rt?.uptime, at: rt?.confirmed ? rt.uptimeAt : null },
+      { source: 'LocalLink', uptime: local?.uptime, at: this.discovery.restored?.has(local?.id) ? null : local?.lastSeen },
       { source: 'MQTT HA', uptime: remote?.liveUptime, at: remote?.liveUptimeAt },
       { source: 'MQTT', uptime: rt?.monitor.status.liveUptime, at: rt?.monitor.status.liveUptimeAt },
     ].filter((s) => Number.isFinite(s.uptime) && s.uptime >= 0 && Number.isFinite(s.at) && s.at > 0);
@@ -197,13 +236,14 @@ export class Manager {
         throw error;
       }
       await this.udpLog.track(this.udpEntry(entry));
+      this.syncTrackedDiscovery();
       return this.publicEntry(entry);
     });
   }
   runtime(entry) {
-    if (!this.runtimes.has(entry.id))
+    if (!this.runtimes.has(entry.id)) {
+      const cached = this.cache?.data.http.find((item) => item.id === entry.id && item.address === entry.address);
       this.runtimes.set(entry.id, {
-        connected: false,
         error: null,
         lastSuccess: null,
         info: null,
@@ -212,11 +252,15 @@ export class Manager {
         mqtt: null,
         devices: [],
         coordinator: null,
+        ...cached,
+        confirmed: false,
+        connected: null,
         detailsAt: 0,
         joinUntil: 0,
         monitor: new MqttMonitor(),
         events: new EventMonitor(entry),
       });
+    }
     return this.runtimes.get(entry.id);
   }
   publicEntry(entry) {
@@ -234,7 +278,10 @@ export class Manager {
     const rebootTransports = this.rebootTransports(entry);
     if (entry.mode === 'mqtt') {
       const live = this.mqttDiscovery?.list().find((d) => d.mqttPrefix === entry.mqttPrefix);
-      const observed = live || entry.mqttSnapshot;
+      const observed = { ...entry.mqttSnapshot, ...Object.fromEntries(Object.entries(live || {})
+        .filter(([, value]) => value !== null && value !== undefined && value !== '')) };
+      const availability = local?.online || live?.online ? 'online'
+        : live?.availability || (Date.now() - this.startedAt < OFFLINE_TIMEOUT ? 'unknown' : 'offline');
       return {
         id: entry.id,
         name: observed?.name || entry.name,
@@ -247,8 +294,8 @@ export class Manager {
         rebootTransports,
         lastDataAt: Math.max(local?.lastSeen || 0, live?.lastDataAt || observed?.lastDataAt || 0) || null,
         observed,
-        connected: live?.availability === 'unknown' || !live ? null : Boolean(live.online),
-        availability: live?.availability || 'unknown',
+        connected: availability === 'unknown' ? null : availability === 'online',
+        availability,
         lastSuccess: live?.lastSeen || null,
         uptime: observed?.uptime ?? null,
         info: {
@@ -270,6 +317,8 @@ export class Manager {
     const rt = this.runtime(entry);
     const observed = this.discovery.devices.get(entry.discoveryId);
     const uptime = observed && observed.lastSeen > (rt.uptimeAt || 0) ? observed.uptime : rt.uptime;
+    const connected = rt.connected === true || local?.online || remote?.online ? true
+      : !rt.confirmed && Date.now() - this.startedAt < OFFLINE_TIMEOUT ? null : false;
     return {
       id: entry.id,
       name: entry.name,
@@ -280,12 +329,14 @@ export class Manager {
       authenticated: Boolean(entry.token),
       observed: observed || null,
       addressChanged: Boolean(observed && new URL(entry.address).hostname !== observed.address),
-      connected: rt.connected,
+      connected,
+      availability: connected === null ? 'unknown' : connected ? 'online' : 'offline',
       error: rt.error,
       lastSuccess: rt.lastSuccess,
       lastDataAt:
         Math.max(
           rt.lastSuccess || 0,
+          rt.lastDataAt || 0,
           local?.lastSeen || 0,
           remote?.lastDataAt || 0,
           rt.monitor.status.lastMessage || 0,
@@ -318,10 +369,11 @@ export class Manager {
   }
   state() {
     return {
-      version: '0.1.14',
+      version: '0.1.15',
       sidebarInstallation: this.sidebarInstallation || null,
+      cacheError: this.cache?.error || null,
       discovery: {
-        ...this.discovery.status,
+        ...this.discovery.snapshot(),
         mqtt: this.mqttDiscovery?.status || null,
         devices: this.visibleControllers(),
       },
@@ -380,6 +432,7 @@ export class Manager {
     }
     await this.udpLog.track(this.udpEntry(entry));
     await this.refresh(entry, true);
+    this.syncTrackedDiscovery();
     return this.publicEntry(entry);
   }
   async refresh(entry, forceConfig = false) {
@@ -393,8 +446,10 @@ export class Manager {
         if (this.stopped || !this.store.entries.includes(entry)) return;
         if (!info || typeof info.version !== 'string' || typeof info.board !== 'string')
           throw new GatewayError('Неизвестный ответ SLS', 'protocol');
-        rt.info = info;
+        rt.info = { ...rt.info, ...Object.fromEntries(Object.entries(info)
+          .filter(([, value]) => value !== null && value !== undefined && value !== '')) };
         rt.connected = true;
+        rt.confirmed = true;
         rt.lastSuccess = Date.now();
         rt.error = null;
         // /api/info does not include uptime on current firmware.
@@ -408,8 +463,10 @@ export class Manager {
           }
         }
         if (this.stopped || !this.store.entries.includes(entry)) return;
-        rt.uptime = Number.isFinite(uptime) && uptime >= 0 ? uptime : null;
-        rt.uptimeAt = rt.uptime === null ? null : uptimeAt;
+        if (Number.isFinite(uptime) && uptime >= 0) {
+          rt.uptime = uptime;
+          rt.uptimeAt = uptimeAt;
+        }
         if (forceConfig || !rt.configAt || Date.now() - rt.configAt > 300000) {
           try {
             const config = await readGatewayConfig(entry);
@@ -438,7 +495,7 @@ export class Manager {
     const entry = this.entry(id);
     if (entry.mode === 'mqtt') return { ...this.publicEntry(entry), mqttDevices: this.mqttDevices(entry) };
     const rt = this.runtime(entry);
-    if (!rt.lastSuccess || force) await this.refresh(entry, force);
+    if (!rt.confirmed || force) await this.refresh(entry, force);
     if (!rt.detailsPending && (force || Date.now() - rt.detailsAt > 15000)) {
       rt.detailsPending = (async () => {
         const errors = [];
@@ -620,9 +677,12 @@ export class Manager {
     rt?.events.close();
     this.runtimes.delete(id);
     this.reboots.remove(id);
+    this.syncTrackedDiscovery();
+    await this.saveCache();
   }
   start() {
     this.stopped = false;
+    this.cacheTimer = setInterval(() => void this.saveCache(), 15000).unref();
     this.udpReady = this.mutate(() => this.udpLog.start(this.store.entries.map(entry => this.udpEntry(entry))));
     void this.udpReady.catch(error => console.error('UDP log startup:', error.code || error.message));
     // MQTT may provide an address after startup. Refresh receivers without opening the UI.
@@ -657,10 +717,11 @@ export class Manager {
     clearInterval(this.timer);
     clearInterval(this.rebootTimer);
     clearInterval(this.udpTimer);
+    clearInterval(this.cacheTimer);
     for (const rt of this.runtimes.values()) {
       rt.monitor.stop();
       rt.events.close();
     }
-    return this.udpLog.close();
+    return Promise.all([this.udpLog.close(), this.saveCache()]);
   }
 }
