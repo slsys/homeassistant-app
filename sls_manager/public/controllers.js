@@ -154,6 +154,7 @@ window.slsViews = (() => {
   function matches(c, query) {
     const values = [
       c.name,
+      area(c.ha),
       c.host,
       c.ip,
       c.version,

@@ -369,7 +369,7 @@ export class Manager {
   }
   state() {
     return {
-      version: '0.1.15',
+      version: '0.1.16',
       sidebarInstallation: this.sidebarInstallation || null,
       cacheError: this.cache?.error || null,
       discovery: {

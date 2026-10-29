@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.16
+
+- Search saved and visible controllers by their Home Assistant area name.
+
 ## 0.1.15
 
 - Restore the last known HTTP, MQTT and LocalLink controller data after an application restart.
